@@ -1,0 +1,225 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    name: hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Compile
+        run: mvn -B -DskipTests compile
+
+      - name: Report javac lint warnings
+        run: |
+          set -o pipefail
+          mvn -B -q org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
+            -Dmdep.outputFile=target/dependency-classpath.txt
+          mkdir -p target/lint-main target/lint-test
+          # Word splitting on the sorted source-file lists is intentional.
+          # shellcheck disable=SC2046
+          {
+            javac --release 21 -Xlint:all \
+              -cp "$(cat target/dependency-classpath.txt)" \
+              -d target/lint-main \
+              $(find src/main/java -name '*.java' | sort)
+            javac --release 21 -Xlint:all \
+              -cp "target/lint-main:$(cat target/dependency-classpath.txt)" \
+              -d target/lint-test \
+              $(find src/test/java -name '*.java' | sort)
+          } 2>&1 | tee target/javac-lint.txt
+          warnings="$(grep -c 'warning:' target/javac-lint.txt || true)"
+          {
+            echo "### javac -Xlint:all"
+            echo
+            echo "warnings: ${warnings}"
+            echo
+            echo '```'
+            cat target/javac-lint.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check whitespace
+        run: |
+          fail=0
+          cr="$(printf '\r')"
+
+          if git grep -nIE '[[:blank:]]+$' -- .; then
+            echo "::error::tracked files contain trailing whitespace"
+            fail=1
+          fi
+
+          if git grep -nI "$cr" -- .; then
+            echo "::error::tracked files contain carriage returns"
+            fail=1
+          fi
+
+          while IFS= read -r file; do
+            if [ -s "$file" ] && [ -n "$(tail -c 1 "$file")" ]; then
+              echo "::error file=${file}::file does not end with a newline"
+              fail=1
+            fi
+          done < <(git ls-files)
+
+          exit "$fail"
+
+  build-test:
+    name: build and test (${{ matrix.label }}, JDK ${{ matrix.java }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: Linux
+            java: '21'
+          - os: ubuntu-latest
+            label: Linux
+            java: '25'
+          - os: macos-latest
+            label: macOS
+            java: '21'
+          - os: windows-latest
+            label: Windows
+            java: '21'
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Record toolchain
+        run: |
+          java -version
+          mvn -v
+
+      - name: Run Maven verification
+        run: mvn -B verify
+
+      - name: Install artifact
+        run: |
+          rm -rf "$HOME/.m2/repository/com/ratelimitly"
+          mvn -B -DskipTests install
+
+      - name: Verify installed artifact is consumable
+        run: |
+          # Resolve the version from the pom rather than hardcoding it. A literal
+          # here silently breaks on every release bump, and the failure looks like
+          # a broken artifact rather than a stale workflow.
+          version="$(mvn -B -q -DforceStdout \
+            org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate \
+            -Dexpression=project.version)"
+          echo "resolved project version: ${version}"
+          dir="$HOME/.m2/repository/com/ratelimitly/ratelimitly-java-client/${version}"
+          jar="$dir/ratelimitly-java-client-${version}.jar"
+          test -f "$jar"
+          test -f "$dir/ratelimitly-java-client-${version}.pom"
+
+          mkdir -p target/consumer/classpath
+          cat > target/consumer/classpath/Consumer.java <<'EOF'
+          import com.ratelimitly.RateLimitlyClient;
+          import com.ratelimitly.RateLimitlyClientConfig;
+          import com.ratelimitly.RateLimitlyClients;
+          import com.ratelimitly.RateLimitlyException;
+
+          public final class Consumer {
+              private Consumer() {
+              }
+
+              static RateLimitlyClient open(String apiKey)
+                      throws RateLimitlyException {
+                  return RateLimitlyClients.create(
+                      RateLimitlyClientConfig.builder(apiKey).build());
+              }
+          }
+          EOF
+          javac --release 21 -cp "$jar" \
+            -d target/consumer/classpath \
+            target/consumer/classpath/Consumer.java
+
+          mkdir -p target/consumer/module/src/main/java/consumer
+          cat > target/consumer/module/src/main/java/module-info.java <<'EOF'
+          module ratelimitly.consumer {
+              requires com.ratelimitly.client;
+          }
+          EOF
+          cat > target/consumer/module/src/main/java/consumer/Consumer.java <<'EOF'
+          package consumer;
+
+          import com.ratelimitly.RateLimitlyClient;
+          import com.ratelimitly.RateLimitlyClientConfig;
+          import com.ratelimitly.RateLimitlyClients;
+          import com.ratelimitly.RateLimitlyException;
+
+          public final class Consumer {
+              private Consumer() {
+              }
+
+              static RateLimitlyClient open(String apiKey)
+                      throws RateLimitlyException {
+                  return RateLimitlyClients.create(
+                      RateLimitlyClientConfig.builder(apiKey).build());
+              }
+          }
+          EOF
+          cat > target/consumer/module/pom.xml <<EOF
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>consumer</groupId>
+            <artifactId>module-consumer</artifactId>
+            <version>1.0.0</version>
+            <properties>
+              <maven.compiler.release>21</maven.compiler.release>
+            </properties>
+            <dependencies>
+              <dependency>
+                <groupId>com.ratelimitly</groupId>
+                <artifactId>ratelimitly-java-client</artifactId>
+                <version>${version}</version>
+              </dependency>
+            </dependencies>
+          </project>
+          EOF
+          mvn -B -f target/consumer/module/pom.xml compile
+
+          echo "- JDK ${{ matrix.java }}: installed and compiled classpath/module-path consumers against $(basename "$jar")" \
+            >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,255 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.ratelimitly</groupId>
+  <artifactId>ratelimitly-java-client</artifactId>
+  <version>3.0.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <name>RateLimitly Java Client</name>
+  <description>Java client library for RateLimitly resource admission and service-latency reporting</description>
+  <url>https://github.com/ratelimitly-com/rl-java-client</url>
+  <inceptionYear>2026</inceptionYear>
+
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://opensource.org/license/mit</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <id>wojciech-fraczak</id>
+      <name>wojciech-fraczak</name>
+      <email>wojciech@ratelimitly.com</email>
+      <organization>RateLimitly</organization>
+      <organizationUrl>https://ratelimitly.com</organizationUrl>
+    </developer>
+  </developers>
+
+  <scm>
+    <connection>scm:git:https://github.com/ratelimitly-com/rl-java-client.git</connection>
+    <developerConnection>scm:git:ssh://git@github.com/ratelimitly-com/rl-java-client.git</developerConnection>
+    <url>https://github.com/ratelimitly-com/rl-java-client</url>
+    <tag>HEAD</tag>
+  </scm>
+
+  <issueManagement>
+    <system>GitHub</system>
+    <url>https://github.com/ratelimitly-com/rl-java-client/issues</url>
+  </issueManagement>
+
+  <ciManagement>
+    <system>GitHub Actions</system>
+    <url>https://github.com/ratelimitly-com/rl-java-client/actions</url>
+  </ciManagement>
+
+  <properties>
+    <central.publishing.version>0.11.0</central.publishing.version>
+    <central.skipPublishing>false</central.skipPublishing>
+    <junit.version>5.14.4</junit.version>
+    <maven.antrun.version>3.2.0</maven.antrun.version>
+    <maven.clean.version>3.5.0</maven.clean.version>
+    <maven.compiler.version>3.15.0</maven.compiler.version>
+    <maven.compiler.release>21</maven.compiler.release>
+    <maven.deploy.version>3.1.4</maven.deploy.version>
+    <maven.gpg.version>3.2.8</maven.gpg.version>
+    <maven.install.version>3.1.4</maven.install.version>
+    <maven.jar.version>3.5.1</maven.jar.version>
+    <maven.javadoc.version>3.12.0</maven.javadoc.version>
+    <maven.resources.version>3.3.1</maven.resources.version>
+    <maven.source.version>3.4.0</maven.source.version>
+    <maven.surefire.version>3.5.6</maven.surefire.version>
+    <project.build.outputTimestamp>2026-01-01T00:00:00Z</project.build.outputTimestamp>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+  </properties>
+
+  <dependencies>
+    <dependency>
+      <groupId>dnsjava</groupId>
+      <artifactId>dnsjava</artifactId>
+      <version>3.6.3</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <version>${junit.version}</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-clean-plugin</artifactId>
+        <version>${maven.clean.version}</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>${maven.compiler.version}</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>${maven.resources.version}</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>${maven.surefire.version}</version>
+        <configuration>
+          <failIfNoTests>true</failIfNoTests>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>${maven.jar.version}</version>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>com.ratelimitly.client</Automatic-Module-Name>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-install-plugin</artifactId>
+        <version>${maven.install.version}</version>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-deploy-plugin</artifactId>
+        <version>${maven.deploy.version}</version>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <profile>
+      <id>central-release</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <version>${maven.source.version}</version>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>jar-no-fork</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <version>${maven.javadoc.version}</version>
+            <configuration>
+              <doclint>all</doclint>
+              <excludePackageNames>com.ratelimitly.internal</excludePackageNames>
+              <failOnWarnings>true</failOnWarnings>
+            </configuration>
+            <executions>
+              <execution>
+                <id>attach-javadocs</id>
+                <phase>package</phase>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>${maven.gpg.version}</version>
+            <configuration>
+              <gpgArguments>
+                <arg>--pinentry-mode</arg>
+                <arg>loopback</arg>
+              </gpgArguments>
+            </configuration>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>sign</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-antrun-plugin</artifactId>
+            <version>${maven.antrun.version}</version>
+            <executions>
+              <execution>
+                <id>verify-reviewed-artifacts</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>run</goal>
+                </goals>
+                <configuration>
+                  <target if="release.expectedArtifacts">
+                    <macrodef name="verify-jar">
+                      <attribute name="suffix"/>
+                      <sequential>
+                        <fail message="Release artifact mismatch: ${project.build.finalName}@{suffix}.jar">
+                          <condition>
+                            <not>
+                              <and>
+                                <available file="${project.build.directory}/${project.build.finalName}@{suffix}.jar" type="file"/>
+                                <filesmatch
+                                    file1="${project.build.directory}/${project.build.finalName}@{suffix}.jar"
+                                    file2="${release.expectedArtifacts}/${project.build.finalName}@{suffix}.jar"/>
+                              </and>
+                            </not>
+                          </condition>
+                        </fail>
+                      </sequential>
+                    </macrodef>
+                    <verify-jar suffix=""/>
+                    <verify-jar suffix="-sources"/>
+                    <verify-jar suffix="-javadoc"/>
+                    <echo>Verified reviewed release artifacts before deployment.</echo>
+                  </target>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>${central.publishing.version}</version>
+            <extensions>true</extensions>
+            <configuration>
+              <publishingServerId>central</publishingServerId>
+              <autoPublish>true</autoPublish>
+              <waitUntil>published</waitUntil>
+              <skipPublishing>${central.skipPublishing}</skipPublishing>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>

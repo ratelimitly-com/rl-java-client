@@ -1,0 +1,798 @@
+name: release
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'docs/releasing.md'
+      - 'pom.xml'
+      - 'src/**'
+      - 'tools/build-central-dry-run.sh'
+      - 'tools/verify-central-artifacts.sh'
+      - 'tools/test-release-artifact-gate.sh'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never cancel a release mid-flight. This is the opposite of ci.yml on purpose.
+  cancel-in-progress: false
+
+env:
+  # The build and release plugins are pinned in pom.xml. The help plugin is used before Maven
+  # has resolved the complete build plan, so its full coordinate remains explicit here.
+  MAVEN_HELP_PLUGIN: org.apache.maven.plugins:maven-help-plugin:3.5.2
+
+jobs:
+  metadata:
+    name: Validate release metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.metadata.outputs.build }}
+      commit: ${{ steps.metadata.outputs.commit }}
+      epoch: ${{ steps.metadata.outputs.epoch }}
+      publish: ${{ steps.metadata.outputs.publish }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      version: ${{ steps.metadata.outputs.version }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Resolve immutable build metadata
+        id: metadata
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # The pom is the single source of truth for the released version: bumping <version>
+          # on main is what cuts a release. Nobody pushes a tag by hand. Read it with Maven
+          # rather than grep so the answer is the one Maven itself would use.
+          raw_version="$(
+            mvn -B -ntp -q -DforceStdout \
+              "${MAVEN_HELP_PLUGIN}:evaluate" \
+              -Dexpression=project.version
+          )"
+          version="$(printf '%s\n' "$raw_version" | tail -n 1 | tr -d '[:space:]')"
+          if [[ -z "$version" ]]; then
+            echo "::error::could not read project.version from pom.xml"
+            exit 1
+          fi
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]]; then
+            echo "::error::project.version '${version}' is not a usable Maven version"
+            exit 1
+          fi
+
+          commit="$(git rev-parse HEAD)"
+          epoch="$(git show -s --format=%ct HEAD)"
+          release_tag="v${version}"
+          publish=false
+
+          # THE SNAPSHOT GUARD.
+          #
+          # A -SNAPSHOT is Maven's marker for "work in progress, contents may change under this
+          # coordinate". It is not a releasable version. The tempting shortcut -- strip the
+          # suffix and publish 0.1.0 -- ships an artifact the pom never claimed to be, and
+          # burns the 0.1.0 coordinate for the real 0.1.0. So this workflow refuses instead of
+          # guessing.
+          #
+          # What it does NOT do is turn that refusal into a permanent red X. The POM is a
+          # SNAPSHOT by design and stays that way until someone deliberately cuts a release, so
+          # failing every push to main would fire forever, and an alarm that is always on
+          # teaches people to ignore the one that matters. A SNAPSHOT on main is therefore a
+          # notice: green, quiet, and it publishes nothing. The invariant that actually
+          # prevents a wrong publish is below -- publish=true is impossible unless the version
+          # is MAJOR.MINOR.PATCH.
+          #
+          # A version that is malformed rather than merely a SNAPSHOT still fails, and so does
+          # a tag that points at a different commit. Those mean something is actually wrong.
+          releasable=true
+          malformed=false
+          refusal=""
+          if [[ "$version" == *-SNAPSHOT ]]; then
+            releasable=false
+            refusal="pom.xml is at ${version}, which is not a releasable version. Set <version> in pom.xml to a MAJOR.MINOR.PATCH release version and push that to main to cut a release. This workflow will not strip the -SNAPSHOT suffix and publish ${version%-SNAPSHOT} on the pom's behalf."
+          elif [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            releasable=false
+            malformed=true
+            refusal="pom.xml is at ${version}, which is not MAJOR.MINOR.PATCH. Set <version> in pom.xml to a numeric release version."
+          fi
+
+          # Resolve a tag to the commit it points at, dereferencing annotated tags. This uses
+          # the authenticated API without retaining credentials in the Git checkout.
+          tag_target() {
+            local ref_json object_type object_sha
+            ref_json="$(gh api "repos/${GH_REPO}/git/ref/tags/$1" 2>/dev/null)" || return 1
+            object_type="$(printf '%s' "$ref_json" | jq -r '.object.type')"
+            object_sha="$(printf '%s' "$ref_json" | jq -r '.object.sha')"
+            if [[ "$object_type" == tag ]]; then
+              object_sha="$(gh api "repos/${GH_REPO}/git/tags/${object_sha}" --jq '.object.sha')"
+            fi
+            printf '%s' "$object_sha"
+          }
+
+          verify_tag_commit() {
+            local tag_commit
+            if ! tag_commit="$(tag_target "$release_tag")"; then
+              # A draft release does not create its tag until it is published, so an absent
+              # tag is normal here and there is nothing to contradict.
+              return 0
+            fi
+            if [[ "$tag_commit" != "$commit" ]]; then
+              echo "::error::${release_tag} points at ${tag_commit}, expected ${commit}"
+              exit 1
+            fi
+          }
+
+          case "$GITHUB_EVENT_NAME" in
+            push)
+              if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+                echo "::error::releases are only cut from main, not ${GITHUB_REF}"
+                exit 1
+              fi
+              if [[ "$malformed" == true ]]; then
+                echo "::error::${refusal}"
+                {
+                  echo "### Release refused"
+                  echo
+                  echo "${refusal}"
+                } >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+              fi
+              if [[ "$releasable" != true ]]; then
+                # The steady state of this repository. Nothing is wrong; nothing is released.
+                echo "::notice::${refusal}"
+              elif gh release view "$release_tag" >/dev/null 2>&1; then
+                state="$(
+                  gh release view "$release_tag" \
+                    --json isDraft \
+                    --jq .isDraft
+                )"
+                if [[ "$state" == true ]]; then
+                  verify_tag_commit
+                  publish=true
+                else
+                  echo "${release_tag} already published; bump the pom version for the next release"
+                fi
+              elif tag_target "$release_tag" >/dev/null 2>&1; then
+                verify_tag_commit
+                publish=true
+              else
+                publish=true
+              fi
+              ;;
+            pull_request|workflow_dispatch)
+              # Dry run: build and aggregate the exact release asset set, publish nothing,
+              # so the release path stays exercised before it matters.
+              if [[ "$releasable" != true ]]; then
+                echo "::notice::${refusal} This run is a dry run: it builds and checks the release assets but publishes nothing."
+              fi
+              ;;
+            *)
+              echo "::error::unsupported release event: ${GITHUB_EVENT_NAME}"
+              exit 1
+              ;;
+          esac
+
+          # Whether the build jobs run at all. Pull requests and workflow_dispatch always
+          # exercise the release path. A push to main only does so when it will actually
+          # publish, so a routine push on a SNAPSHOT costs one short green job instead of a
+          # full rebuild that ci.yml has already done.
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            build="$publish"
+          else
+            build=true
+          fi
+
+          # Belt and braces: nothing may reach the publish jobs on a non-release version.
+          if [[ "$publish" == true && ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::refusing to publish non-release version ${version}"
+            exit 1
+          fi
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$epoch" =~ ^[0-9]+$ ]]
+
+          {
+            echo "build=$build"
+            echo "commit=$commit"
+            echo "epoch=$epoch"
+            echo "publish=$publish"
+            echo "tag=$release_tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Release metadata"
+            echo
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| version | \`${version}\` |"
+            echo "| tag | \`${release_tag}\` |"
+            echo "| commit | \`${commit}\` |"
+            echo "| SOURCE_DATE_EPOCH | \`${epoch}\` |"
+            echo "| publish | \`${publish}\` |"
+            echo "| build | \`${build}\` |"
+            if [[ "$releasable" != true ]]; then
+              echo
+              echo "**No release was cut.** ${refusal}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  contracts:
+    name: Maven verification (JDK ${{ matrix.java }})
+    if: needs.metadata.outputs.build == 'true'
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        java:
+          - '21'
+          - '25'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Run Maven verification
+        env:
+          SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.epoch }}
+        run: mvn -B -ntp verify
+
+  jars:
+    name: Build signed release dry run
+    if: needs.metadata.outputs.build == 'true'
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Record toolchain
+        run: |
+          java -version
+          mvn -v
+
+      - name: Build and validate signed Central dry run
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.epoch }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # The script creates a disposable signing key and never invokes deploy. Pull requests
+          # therefore exercise signatures and Central bundle structure without registry access.
+          ./tools/build-central-dry-run.sh "$VERSION"
+
+          staged="$RUNNER_TEMP/release-jars"
+          mkdir -p "$staged"
+          for classifier in "" "-sources" "-javadoc"; do
+            jar="target/ratelimitly-java-client-${VERSION}${classifier}.jar"
+            if [[ ! -f "$jar" ]]; then
+              echo "::error::expected ${jar}, which the build did not produce"
+              exit 1
+            fi
+            cp "$jar" "$staged/"
+          done
+          cp target/central-dry-run-bundle.zip "$RUNNER_TEMP/"
+          ls -l "$staged"
+
+      - name: Verify the jars are byte-reproducible
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.epoch }}
+        run: |
+          set -euo pipefail
+          ( cd "$RUNNER_TEMP/release-jars" && sha256sum ./*.jar ) \
+            | sed 's#\./##' | LC_ALL=C sort -k2 > "$RUNNER_TEMP/first-pass.sha256"
+
+          mvn -B -ntp -DskipTests -Pcentral-release \
+            -Dproject.build.outputTimestamp="$SOURCE_DATE_EPOCH" \
+            clean package
+
+          ( cd target && sha256sum ./*.jar ) \
+            | sed 's#\./##' | LC_ALL=C sort -k2 > "$RUNNER_TEMP/second-pass.sha256"
+
+          if ! diff -u "$RUNNER_TEMP/first-pass.sha256" "$RUNNER_TEMP/second-pass.sha256"; then
+            echo "::error::two builds of the same commit produced different jars"
+            exit 1
+          fi
+          {
+            echo "### Reproducible jars"
+            echo
+            echo "Two independent builds of this commit agreed byte for byte."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/first-pass.sha256"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Test the pre-publication artifact gate
+        env:
+          SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.epoch }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: bash tools/test-release-artifact-gate.sh "$VERSION"
+
+      - name: Verify the release jar is consumable
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          jar="$RUNNER_TEMP/release-jars/ratelimitly-java-client-${VERSION}.jar"
+          mkdir -p "$RUNNER_TEMP/consumer"
+          cat > "$RUNNER_TEMP/consumer/Consumer.java" <<'EOF'
+          import com.ratelimitly.RateLimitlyClient;
+          import com.ratelimitly.RateLimitlyClientConfig;
+          import com.ratelimitly.RateLimitlyClients;
+          import com.ratelimitly.RateLimitlyException;
+
+          public final class Consumer {
+              private Consumer() {
+              }
+
+              static RateLimitlyClient open(String apiKey)
+                      throws RateLimitlyException {
+                  return RateLimitlyClients.create(
+                      RateLimitlyClientConfig.builder(apiKey).build());
+              }
+          }
+          EOF
+          javac --release 21 -cp "$jar" \
+            -d "$RUNNER_TEMP/consumer" \
+            "$RUNNER_TEMP/consumer/Consumer.java"
+
+          mvn -B -ntp -q org.apache.maven.plugins:maven-dependency-plugin:3.8.1:build-classpath \
+            -Dmdep.includeScope=runtime \
+            -Dmdep.outputFile="$RUNNER_TEMP/runtime-module-path.txt"
+          mkdir -p "$RUNNER_TEMP/module-consumer/consumer"
+          cat > "$RUNNER_TEMP/module-consumer/module-info.java" <<'EOF'
+          module ratelimitly.consumer {
+              requires com.ratelimitly.client;
+          }
+          EOF
+          cat > "$RUNNER_TEMP/module-consumer/consumer/Consumer.java" <<'EOF'
+          package consumer;
+
+          import com.ratelimitly.RateLimitlyClient;
+          import com.ratelimitly.RateLimitlyClientConfig;
+          import com.ratelimitly.RateLimitlyClients;
+          import com.ratelimitly.RateLimitlyException;
+
+          public final class Consumer {
+              private Consumer() {
+              }
+
+              static RateLimitlyClient open(String apiKey)
+                      throws RateLimitlyException {
+                  return RateLimitlyClients.create(
+                      RateLimitlyClientConfig.builder(apiKey).build());
+              }
+          }
+          EOF
+          javac --release 21 \
+            --module-path "$jar:$(cat "$RUNNER_TEMP/runtime-module-path.txt")" \
+            -d "$RUNNER_TEMP/module-consumer-classes" \
+            "$RUNNER_TEMP/module-consumer/module-info.java" \
+            "$RUNNER_TEMP/module-consumer/consumer/Consumer.java"
+
+      - name: Upload release jars
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-jars
+          path: ${{ runner.temp }}/release-jars/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload structural Central dry-run bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: central-dry-run-bundle
+          path: ${{ runner.temp }}/central-dry-run-bundle.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  aggregate:
+    name: Validate complete release
+    if: needs.metadata.outputs.build == 'true'
+    needs:
+      - metadata
+      - contracts
+      - jars
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Download every release artifact
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/release-inputs
+
+      - name: Reject partial or unexpected release sets
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          inputs="$RUNNER_TEMP/release-inputs"
+          assets="$RUNNER_TEMP/release-assets"
+          mkdir -p "$assets"
+
+          # The exact set, not "at least". A release missing the javadoc jar, or carrying a
+          # stray extra file, fails here rather than shipping.
+          expected=(
+            "ratelimitly-java-client-${VERSION}-javadoc.jar"
+            "ratelimitly-java-client-${VERSION}-sources.jar"
+            "ratelimitly-java-client-${VERSION}.jar"
+          )
+
+          found=()
+          while IFS= read -r -d '' file; do
+            name="$(basename "$file")"
+            if [[ -e "$assets/$name" ]]; then
+              echo "::error::two build jobs produced an asset named ${name}"
+              exit 1
+            fi
+            cp "$file" "$assets/$name"
+            found+=("$name")
+          done < <(find "$inputs" -type f -print0)
+
+          printf '%s\n' "${expected[@]}" | LC_ALL=C sort > "$RUNNER_TEMP/expected.txt"
+          printf '%s\n' "${found[@]}" | LC_ALL=C sort > "$RUNNER_TEMP/found.txt"
+          if ! diff -u "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/found.txt"; then
+            echo "::error::the built assets are not exactly the expected release set"
+            exit 1
+          fi
+
+          ( cd "$assets" && sha256sum ./*.jar | sed 's#\./##' | LC_ALL=C sort -k2 > SHA256SUMS )
+          {
+            echo "### Release assets"
+            echo
+            echo '```'
+            cat "$assets/SHA256SUMS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload exact release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets
+          path: ${{ runner.temp }}/release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  central:
+    name: Publish and verify Maven Central
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.metadata.outputs.publish == 'true'
+    needs:
+      - metadata
+      - aggregate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+
+      - name: Configure JDK, Central token, and release signing key
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          server-id: central
+          server-username: MAVEN_CENTRAL_USERNAME
+          server-password: MAVEN_CENTRAL_TOKEN
+          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          gpg-passphrase: MAVEN_GPG_PASSPHRASE
+
+      - name: Download exact release assets
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Detect safe recovery from an existing Central release
+        id: existing
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          base="https://repo1.maven.org/maven2/com/ratelimitly/ratelimitly-java-client/${VERSION}"
+          pom="ratelimitly-java-client-${VERSION}.pom"
+
+          # Only a confirmed 404 means the coordinate is absent. A transport failure or
+          # unavailable registry must stop recovery before a redeployment is attempted.
+          status="$(curl --silent --show-error --location --retry 3 \
+            --connect-timeout 10 --max-time 60 --write-out '%{http_code}' \
+            --output /dev/null "${base}/${pom}")"
+          case "$status" in
+            200) ;;
+            404)
+              echo "published=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *)
+              echo "::error::Cannot determine Central release state (HTTP ${status})"
+              exit 1
+              ;;
+          esac
+
+          # A rerun after Central succeeded but GitHub publication failed must not redeploy the
+          # immutable coordinate. It may continue only if Central contains this exact build.
+          remote="$RUNNER_TEMP/existing-central-release"
+          mkdir -p "$remote"
+          files=(
+            "$pom"
+            "ratelimitly-java-client-${VERSION}.jar"
+            "ratelimitly-java-client-${VERSION}-sources.jar"
+            "ratelimitly-java-client-${VERSION}-javadoc.jar"
+          )
+          for file in "${files[@]}"; do
+            curl --fail --silent --show-error --location --retry 3 \
+              --output "$remote/$file" "${base}/${file}"
+          done
+          cmp pom.xml "$remote/$pom"
+          for classifier in "" "-sources" "-javadoc"; do
+            file="ratelimitly-java-client-${VERSION}${classifier}.jar"
+            cmp "release-assets/$file" "$remote/$file"
+          done
+          echo "published=true" >> "$GITHUB_OUTPUT"
+          echo "Central already contains the exact release artifacts; skipping redeployment." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build, sign, and publish through Central Portal
+        if: steps.existing.outputs.published != 'true'
+        shell: bash
+        env:
+          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.epoch }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mvn -B -ntp \
+            -Pcentral-release \
+            -Dproject.build.outputTimestamp="$SOURCE_DATE_EPOCH" \
+            -Drelease.expectedArtifacts="$GITHUB_WORKSPACE/release-assets" \
+            clean deploy
+
+      - name: Verify public Central resolution with a clean named-module consumer
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          base="https://repo1.maven.org/maven2/com/ratelimitly/ratelimitly-java-client/${VERSION}"
+          pom="ratelimitly-java-client-${VERSION}.pom"
+          for attempt in {1..60}; do
+            if curl --fail --silent --show-error --location --retry 2 \
+                --output /dev/null "${base}/${pom}"; then
+              break
+            fi
+            if [[ "$attempt" == 60 ]]; then
+              echo "::error::${pom} did not become visible from Maven Central"
+              exit 1
+            fi
+            sleep 10
+          done
+
+          consumer="$RUNNER_TEMP/central-consumer"
+          mkdir -p "$consumer/src/main/java/consumer"
+          cat > "$consumer/pom.xml" <<EOF
+          <project xmlns="http://maven.apache.org/POM/4.0.0">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>test.ratelimitly</groupId>
+            <artifactId>central-consumer</artifactId>
+            <version>1</version>
+            <properties>
+              <maven.compiler.release>21</maven.compiler.release>
+            </properties>
+            <dependencies>
+              <dependency>
+                <groupId>com.ratelimitly</groupId>
+                <artifactId>ratelimitly-java-client</artifactId>
+                <version>${VERSION}</version>
+              </dependency>
+            </dependencies>
+            <build>
+              <plugins>
+                <plugin>
+                  <groupId>org.apache.maven.plugins</groupId>
+                  <artifactId>maven-compiler-plugin</artifactId>
+                  <version>3.15.0</version>
+                </plugin>
+              </plugins>
+            </build>
+          </project>
+          EOF
+          cat > "$consumer/src/main/java/module-info.java" <<'EOF'
+          module ratelimitly.central.consumer {
+              requires com.ratelimitly.client;
+          }
+          EOF
+          cat > "$consumer/src/main/java/consumer/Consumer.java" <<'EOF'
+          package consumer;
+
+          import com.ratelimitly.RateLimitlyClient;
+          import com.ratelimitly.RateLimitlyClientConfig;
+          import com.ratelimitly.RateLimitlyClients;
+          import com.ratelimitly.RateLimitlyException;
+
+          public final class Consumer {
+              private Consumer() {
+              }
+
+              static RateLimitlyClient open(String apiKey) throws RateLimitlyException {
+                  return RateLimitlyClients.create(
+                      RateLimitlyClientConfig.builder(apiKey).build());
+              }
+          }
+          EOF
+          mvn -B -ntp -U \
+            -Dmaven.repo.local="$RUNNER_TEMP/clean-central-m2" \
+            -f "$consumer/pom.xml" \
+            verify
+
+  attest:
+    name: Attest release assets
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.metadata.outputs.publish == 'true'
+    needs:
+      - metadata
+      - aggregate
+      - central
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - name: Download exact release assets
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Create build provenance attestations
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'release-assets/*'
+
+  publish:
+    name: Publish atomic GitHub release
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.metadata.outputs.publish == 'true'
+    needs:
+      - metadata
+      - aggregate
+      - central
+      - attest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download exact release assets
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: release-assets
+          path: release-assets
+
+      - name: Upload to a draft, verify, then publish
+        shell: bash
+        env:
+          COMMIT: ${{ needs.metadata.outputs.commit }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          # Central publication and clean resolution have already succeeded. Assets land on a
+          # draft first so a partial GitHub upload never becomes visible.
+          find release-assets -maxdepth 1 -type f -printf '%f\n' \
+            | LC_ALL=C sort > "$RUNNER_TEMP/expected-assets.txt"
+
+          notes="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "\`ratelimitly-java-client\` ${VERSION}, built from ${COMMIT}."
+            echo
+            echo "Verify the assets with \`sha256sum -c SHA256SUMS\`. The jars are byte-reproducible"
+            echo "from this commit."
+            echo
+            echo "Maven coordinate: \`com.ratelimitly:ratelimitly-java-client:${VERSION}\`."
+          } > "$notes"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != true ]]; then
+              echo "::error::${TAG} is already published; refusing to overwrite it"
+              exit 1
+            fi
+          else
+            gh release create "$TAG" \
+              --draft \
+              --target "$COMMIT" \
+              --title "$TAG" \
+              --notes-file "$notes"
+          fi
+
+          # Assets land on a draft first. A half-uploaded release must never be visible.
+          gh release upload "$TAG" release-assets/* --clobber
+
+          gh release view "$TAG" --json assets --jq '.assets[].name' \
+            | LC_ALL=C sort > "$RUNNER_TEMP/actual-assets.txt"
+          if ! diff -u "$RUNNER_TEMP/expected-assets.txt" "$RUNNER_TEMP/actual-assets.txt"; then
+            echo "::error::${TAG} did not receive every asset; leaving it as a draft"
+            exit 1
+          fi
+
+          gh release edit "$TAG" --draft=false --latest
+          if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != false ]]; then
+            echo "::error::${TAG} is still a draft after publishing"
+            exit 1
+          fi
+          echo "Published ${TAG} at ${COMMIT}" >> "$GITHUB_STEP_SUMMARY"

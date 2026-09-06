@@ -1,0 +1,116 @@
+name: dependency drift
+
+on:
+  schedule:
+    - cron: '27 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-drift
+  cancel-in-progress: true
+
+jobs:
+  latest-jdk:
+    name: latest jdk (${{ matrix.java }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        java:
+          - '25'
+          - '26'
+          - '27-ea'
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK ${{ matrix.java }}
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+          cache: maven
+
+      - name: Report resolved toolchain
+        run: |
+          set -o pipefail
+          java -version 2>&1 | tee "$RUNNER_TEMP/java-version.txt"
+          mvn -v
+          {
+            echo "### Temurin ${{ matrix.java }}"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/java-version.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run Maven verification
+        run: mvn -B verify
+
+      - name: Install artifact
+        run: |
+          rm -rf "$HOME/.m2/repository/com/ratelimitly"
+          mvn -B -DskipTests install
+
+  latest-deps:
+    name: latest deps
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Bump dependencies to latest releases
+        run: |
+          mvn -B org.codehaus.mojo:versions-maven-plugin:2.21.0:use-latest-releases \
+            -DgenerateBackupPoms=false \
+            -Dmaven.version.ignore='.*-alpha.*,.*-beta.*,.*-rc.*,.*-M[0-9]+,.*-SNAPSHOT'
+
+      - name: Report resolved dependency versions
+        run: |
+          mvn -B -q org.apache.maven.plugins:maven-dependency-plugin:3.8.1:list \
+            -DincludeScope=runtime \
+            -DoutputFile="$RUNNER_TEMP/dependencies.txt"
+          {
+            echo "### Latest released dependencies"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/dependencies.txt"
+            echo '```'
+            echo
+            echo "### pom.xml drift (detected only, never committed)"
+            echo
+            echo '```diff'
+            git diff -- pom.xml
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run Maven verification
+        run: mvn -B verify
+
+      - name: Install artifact
+        run: |
+          rm -rf "$HOME/.m2/repository/com/ratelimitly"
+          mvn -B -DskipTests install
+
+      - name: Confirm dependency bumps stay uncommitted
+        run: |
+          git checkout -- pom.xml
+          git diff --exit-code
