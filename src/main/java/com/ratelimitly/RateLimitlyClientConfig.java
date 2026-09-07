@@ -15,8 +15,6 @@ public final class RateLimitlyClientConfig {
     private final String dnsNameOverride;
     private final long dnsTimeoutMs;
     private final long dnsRefreshIntervalSeconds;
-    private final boolean steeringFeedback;
-    private final boolean ignoreSteeringFeedback;
     private final RequestPolicy requestPolicy;
     private final DnsResolver dnsResolver;
     private final Executor asyncExecutor;
@@ -34,8 +32,6 @@ public final class RateLimitlyClientConfig {
         }
         dnsTimeoutMs = builder.dnsTimeoutMs;
         dnsRefreshIntervalSeconds = builder.dnsRefreshIntervalSeconds;
-        steeringFeedback = builder.steeringFeedback;
-        ignoreSteeringFeedback = builder.ignoreSteeringFeedback;
         requestPolicy = Objects.requireNonNull(builder.requestPolicy, "requestPolicy");
         dnsResolver = builder.dnsResolver;
         asyncExecutor = builder.asyncExecutor;
@@ -80,24 +76,6 @@ public final class RateLimitlyClientConfig {
     }
 
     /**
-     * Returns the source-port steering indication sent by this client.
-     *
-     * @return the configured indication
-     */
-    public boolean steeringFeedback() {
-        return steeringFeedback;
-    }
-
-    /**
-     * Returns whether the client ignores server requests to change its local source port.
-     *
-     * @return {@code true} when returned steering feedback is ignored
-     */
-    public boolean ignoreSteeringFeedback() {
-        return ignoreSteeringFeedback;
-    }
-
-    /**
      * Returns the resource-request delivery and response-selection policy.
      *
      * @return the configured immutable policy
@@ -129,8 +107,6 @@ public final class RateLimitlyClientConfig {
             + ", dnsNameOverride=" + dnsNameOverride
             + ", dnsTimeoutMs=" + dnsTimeoutMs
             + ", dnsRefreshIntervalSeconds=" + dnsRefreshIntervalSeconds
-            + ", steeringFeedback=" + steeringFeedback
-            + ", ignoreSteeringFeedback=" + ignoreSteeringFeedback
             + ", requestPolicy=" + requestPolicy
             + ", dnsResolver=" + (dnsResolver == null ? "<default>" : "<custom>")
             + ", asyncExecutor=" + (asyncExecutor == null ? "<client-owned>" : "<caller-owned>")
@@ -150,8 +126,6 @@ public final class RateLimitlyClientConfig {
         private String dnsNameOverride;
         private long dnsTimeoutMs = 1_000;
         private long dnsRefreshIntervalSeconds = 300;
-        private boolean steeringFeedback;
-        private boolean ignoreSteeringFeedback;
         private RequestPolicy requestPolicy = RequestPolicy.defaultPolicy();
         private DnsResolver dnsResolver;
         private Executor asyncExecutor;
@@ -194,28 +168,6 @@ public final class RateLimitlyClientConfig {
          */
         public Builder dnsRefreshIntervalSeconds(long dnsRefreshIntervalSeconds) {
             this.dnsRefreshIntervalSeconds = dnsRefreshIntervalSeconds;
-            return this;
-        }
-
-        /**
-         * Sets the source-port steering indication carried by requests.
-         *
-         * @param steeringFeedback indication to send
-         * @return this builder
-         */
-        public Builder steeringFeedback(boolean steeringFeedback) {
-            this.steeringFeedback = steeringFeedback;
-            return this;
-        }
-
-        /**
-         * Controls whether returned source-port steering requests are ignored.
-         *
-         * @param ignoreSteeringFeedback {@code true} to keep the current local source port
-         * @return this builder
-         */
-        public Builder ignoreSteeringFeedback(boolean ignoreSteeringFeedback) {
-            this.ignoreSteeringFeedback = ignoreSteeringFeedback;
             return this;
         }
 

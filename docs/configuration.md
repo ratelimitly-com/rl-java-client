@@ -80,8 +80,6 @@ Applications still provide each resource and latency-tracker definition.
 | `dnsRefreshIntervalSeconds` | 300 s | Maximum interval before activity refreshes membership; a smaller SRV TTL wins. |
 | `requestPolicy` | Standard policy | Fan-out, replay, selection, completion delivery, and deduplication horizon. |
 | `dnsResolver` | dnsjava resolver | Optional discovery implementation, primarily for tests or host integration. |
-| `steeringFeedback` | `false` | Source-port steering indication sent in requests. |
-| `ignoreSteeringFeedback` | `false` | Ignore a server request to change the local UDP source port. |
 | `asyncExecutor` | Client-owned virtual-thread executor | Optional caller-owned executor for asynchronous operations. |
 
 The complete HA policy is documented in [Request policy](request-policy.md).

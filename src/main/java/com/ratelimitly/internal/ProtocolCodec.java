@@ -249,7 +249,7 @@ public final class ProtocolCodec {
         byte[] pdu
     ) throws RateLimitlyException {
         byte[] requestIdBytes = uuidToBytes(requestId);
-        byte[] apiKeyTlv = buildApiKeyTlv(credential.keyId(), requestIdBytes, config.steeringFeedback());
+        byte[] apiKeyTlv = buildApiKeyTlv(credential.keyId(), requestIdBytes, false);
 
         byte[] authAndPdu = switch (credential.authMethod()) {
             case NONE -> {

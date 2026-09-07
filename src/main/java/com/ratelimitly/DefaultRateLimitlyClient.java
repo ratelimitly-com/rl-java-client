@@ -667,7 +667,7 @@ final class DefaultRateLimitlyClient implements RateLimitlyClient {
     }
 
     private void requestSteering(RateLimitDecision decision, long requestGeneration) {
-        if (decision.steeringFeedback() || config.ignoreSteeringFeedback()) {
+        if (decision.steeringFeedback()) {
             return;
         }
 

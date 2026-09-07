@@ -285,7 +285,9 @@ final class PublicApiContractTest {
             publicMethods.stream().noneMatch(method -> method.getName().equals("debug")
                 || method.getName().equals("apiKey")
                 || method.getName().equals("bech32Credential")
-                || method.getName().equals("decodeCredential")),
+                || method.getName().equals("decodeCredential")
+                || method.getName().equals("steeringFeedback")
+                || method.getName().equals("ignoreSteeringFeedback")),
             "obsolete configuration API remains"
         );
         var builders = publicMethods.stream()
