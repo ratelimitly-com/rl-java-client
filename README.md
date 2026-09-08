@@ -31,19 +31,6 @@ optionally report measured latencies for services used by that work. A reporter
 may instead send only latency reports, and a resource consumer may send only
 resource requests.
 
-```mermaid
-flowchart LR
-    Consumer["Resource-consuming application"] --> Request["Resource request<br/>intended consumptions + optional guards"]
-    Request --> Evaluate["RateLimitly<br/>atomic admission decision"]
-    Evaluate --> Decision{"Granted?"}
-    Decision -->|No| Rejected["Nothing consumed"]
-    Decision -->|Yes| Granted["Resources consumed<br/>application may perform work"]
-
-    Reporter["Same or another application"] --> Report["Optional latency report<br/>measured service latencies"]
-    Report --> Trackers["Latency trackers"]
-    Trackers -. "input to latency guards" .-> Evaluate
-```
-
 ## Three small examples
 
 The examples assume that a reusable `RateLimitlyClient client` has already been
