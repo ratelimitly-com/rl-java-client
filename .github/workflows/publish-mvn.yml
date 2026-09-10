@@ -1,31 +1,38 @@
-name: release
+name: publish-mvn
 
 on:
   pull_request:
-    paths:
-      - '.github/workflows/release.yml'
-      - 'docs/releasing.md'
-      - 'pom.xml'
-      - 'src/**'
-      - 'tools/build-central-dry-run.sh'
-      - 'tools/verify-central-artifacts.sh'
-      - 'tools/test-release-artifact-gate.sh'
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
+    inputs:
+      action:
+        description: Dry run, stage for Portal review, or finalize an already published deployment
+        type: choice
+        options: [dry-run, stage, finalize]
+        default: dry-run
+      expected_commit:
+        description: Full main SHA (required for stage/finalize)
+        type: string
+      expected_version:
+        description: Exact numeric POM version (required for stage/finalize)
+        type: string
+      portal_checked:
+        description: I inspected Portal and confirmed no previous upload needs recovery (stage only)
+        type: boolean
+        default: false
+      deployment_id:
+        description: Existing Portal deployment UUID (finalize only)
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
-  # Never cancel a release mid-flight. This is the opposite of ci.yml on purpose.
+  group: maven-${{ github.event_name == 'workflow_dispatch' && inputs.action != 'dry-run' && 'publication' || github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 env:
-  # The build and release plugins are pinned in pom.xml. The help plugin is used before Maven
-  # has resolved the complete build plan, so its full coordinate remains explicit here.
   MAVEN_HELP_PLUGIN: org.apache.maven.plugins:maven-help-plugin:3.5.2
 
 jobs:
@@ -37,205 +44,67 @@ jobs:
       build: ${{ steps.metadata.outputs.build }}
       commit: ${{ steps.metadata.outputs.commit }}
       epoch: ${{ steps.metadata.outputs.epoch }}
-      publish: ${{ steps.metadata.outputs.publish }}
+      action: ${{ steps.metadata.outputs.action }}
       tag: ${{ steps.metadata.outputs.tag }}
       version: ${{ steps.metadata.outputs.version }}
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
-
-      - name: Set up JDK 21
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: '21'
-          cache: maven
-
-      - name: Resolve immutable build metadata
+      - name: Test fail-closed publication policy
+        run: python3 tools/test_publication_policy.py
+      - name: Validate explicit release identity
         id: metadata
-        shell: bash
         env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ inputs.action || 'dry-run' }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          EXPECTED_VERSION: ${{ inputs.expected_version }}
+          PORTAL_CHECKED: ${{ inputs.portal_checked }}
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
         run: |
           set -euo pipefail
+          export COMMIT="$(git rev-parse HEAD)"
+          export VERSION="$(mvn -B -ntp -q -DforceStdout "${MAVEN_HELP_PLUGIN}:evaluate" -Dexpression=project.version | tail -n 1 | tr -d '[:space:]')"
+          python3 tools/publication_policy.py request >> "$GITHUB_OUTPUT"
+          echo "epoch=$(git show -s --format=%ct HEAD)" >> "$GITHUB_OUTPUT"
 
-          # The pom is the single source of truth for the released version: bumping <version>
-          # on main is what cuts a release. Nobody pushes a tag by hand. Read it with Maven
-          # rather than grep so the answer is the one Maven itself would use.
-          raw_version="$(
-            mvn -B -ntp -q -DforceStdout \
-              "${MAVEN_HELP_PLUGIN}:evaluate" \
-              -Dexpression=project.version
-          )"
-          version="$(printf '%s\n' "$raw_version" | tail -n 1 | tr -d '[:space:]')"
-          if [[ -z "$version" ]]; then
-            echo "::error::could not read project.version from pom.xml"
-            exit 1
+  preflight:
+    name: Require exact-main CI and CodeQL
+    if: needs.metadata.outputs.action != 'dry-run'
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read
+      security-events: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require successful exact-commit checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ needs.metadata.outputs.commit }}
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/$GH_REPO/commits/$COMMIT/check-runs?per_page=100" |
+            python3 tools/publication_policy.py checks "$COMMIT"
+          gh api --paginate --slurp "repos/$GH_REPO/code-scanning/analyses?ref=refs/heads/main&per_page=100" |
+            python3 tools/publication_policy.py analyses "$COMMIT"
+          gh api --paginate --slurp "repos/$GH_REPO/code-scanning/alerts?state=open&ref=refs/heads/main&per_page=100" |
+            python3 tools/publication_policy.py alerts
+          tag="v${{ needs.metadata.outputs.version }}"
+          refs="$(git ls-remote --tags origin "refs/tags/$tag" "refs/tags/$tag^{}")"
+          if [ -n "$refs" ]; then
+            resolved="$(printf '%s\n' "$refs" | tail -n 1 | cut -f 1)"
+            test "$resolved" = "$COMMIT"
           fi
-          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]]; then
-            echo "::error::project.version '${version}' is not a usable Maven version"
-            exit 1
-          fi
-
-          commit="$(git rev-parse HEAD)"
-          epoch="$(git show -s --format=%ct HEAD)"
-          release_tag="v${version}"
-          publish=false
-
-          # THE SNAPSHOT GUARD.
-          #
-          # A -SNAPSHOT is Maven's marker for "work in progress, contents may change under this
-          # coordinate". It is not a releasable version. The tempting shortcut -- strip the
-          # suffix and publish 0.1.0 -- ships an artifact the pom never claimed to be, and
-          # burns the 0.1.0 coordinate for the real 0.1.0. So this workflow refuses instead of
-          # guessing.
-          #
-          # What it does NOT do is turn that refusal into a permanent red X. The POM is a
-          # SNAPSHOT by design and stays that way until someone deliberately cuts a release, so
-          # failing every push to main would fire forever, and an alarm that is always on
-          # teaches people to ignore the one that matters. A SNAPSHOT on main is therefore a
-          # notice: green, quiet, and it publishes nothing. The invariant that actually
-          # prevents a wrong publish is below -- publish=true is impossible unless the version
-          # is MAJOR.MINOR.PATCH.
-          #
-          # A version that is malformed rather than merely a SNAPSHOT still fails, and so does
-          # a tag that points at a different commit. Those mean something is actually wrong.
-          releasable=true
-          malformed=false
-          refusal=""
-          if [[ "$version" == *-SNAPSHOT ]]; then
-            releasable=false
-            refusal="pom.xml is at ${version}, which is not a releasable version. Set <version> in pom.xml to a MAJOR.MINOR.PATCH release version and push that to main to cut a release. This workflow will not strip the -SNAPSHOT suffix and publish ${version%-SNAPSHOT} on the pom's behalf."
-          elif [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            releasable=false
-            malformed=true
-            refusal="pom.xml is at ${version}, which is not MAJOR.MINOR.PATCH. Set <version> in pom.xml to a numeric release version."
-          fi
-
-          # Resolve a tag to the commit it points at, dereferencing annotated tags. This uses
-          # the authenticated API without retaining credentials in the Git checkout.
-          tag_target() {
-            local ref_json object_type object_sha
-            ref_json="$(gh api "repos/${GH_REPO}/git/ref/tags/$1" 2>/dev/null)" || return 1
-            object_type="$(printf '%s' "$ref_json" | jq -r '.object.type')"
-            object_sha="$(printf '%s' "$ref_json" | jq -r '.object.sha')"
-            if [[ "$object_type" == tag ]]; then
-              object_sha="$(gh api "repos/${GH_REPO}/git/tags/${object_sha}" --jq '.object.sha')"
-            fi
-            printf '%s' "$object_sha"
-          }
-
-          verify_tag_commit() {
-            local tag_commit
-            if ! tag_commit="$(tag_target "$release_tag")"; then
-              # A draft release does not create its tag until it is published, so an absent
-              # tag is normal here and there is nothing to contradict.
-              return 0
-            fi
-            if [[ "$tag_commit" != "$commit" ]]; then
-              echo "::error::${release_tag} points at ${tag_commit}, expected ${commit}"
-              exit 1
-            fi
-          }
-
-          case "$GITHUB_EVENT_NAME" in
-            push)
-              if [[ "$GITHUB_REF" != refs/heads/main ]]; then
-                echo "::error::releases are only cut from main, not ${GITHUB_REF}"
-                exit 1
-              fi
-              if [[ "$malformed" == true ]]; then
-                echo "::error::${refusal}"
-                {
-                  echo "### Release refused"
-                  echo
-                  echo "${refusal}"
-                } >> "$GITHUB_STEP_SUMMARY"
-                exit 1
-              fi
-              if [[ "$releasable" != true ]]; then
-                # The steady state of this repository. Nothing is wrong; nothing is released.
-                echo "::notice::${refusal}"
-              elif gh release view "$release_tag" >/dev/null 2>&1; then
-                state="$(
-                  gh release view "$release_tag" \
-                    --json isDraft \
-                    --jq .isDraft
-                )"
-                if [[ "$state" == true ]]; then
-                  verify_tag_commit
-                  publish=true
-                else
-                  echo "${release_tag} already published; bump the pom version for the next release"
-                fi
-              elif tag_target "$release_tag" >/dev/null 2>&1; then
-                verify_tag_commit
-                publish=true
-              else
-                publish=true
-              fi
-              ;;
-            pull_request|workflow_dispatch)
-              # Dry run: build and aggregate the exact release asset set, publish nothing,
-              # so the release path stays exercised before it matters.
-              if [[ "$releasable" != true ]]; then
-                echo "::notice::${refusal} This run is a dry run: it builds and checks the release assets but publishes nothing."
-              fi
-              ;;
-            *)
-              echo "::error::unsupported release event: ${GITHUB_EVENT_NAME}"
-              exit 1
-              ;;
-          esac
-
-          # Whether the build jobs run at all. Pull requests and workflow_dispatch always
-          # exercise the release path. A push to main only does so when it will actually
-          # publish, so a routine push on a SNAPSHOT costs one short green job instead of a
-          # full rebuild that ci.yml has already done.
-          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
-            build="$publish"
-          else
-            build=true
-          fi
-
-          # Belt and braces: nothing may reach the publish jobs on a non-release version.
-          if [[ "$publish" == true && ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::refusing to publish non-release version ${version}"
-            exit 1
-          fi
-          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$epoch" =~ ^[0-9]+$ ]]
-
-          {
-            echo "build=$build"
-            echo "commit=$commit"
-            echo "epoch=$epoch"
-            echo "publish=$publish"
-            echo "tag=$release_tag"
-            echo "version=$version"
-          } >> "$GITHUB_OUTPUT"
-
-          {
-            echo "### Release metadata"
-            echo
-            echo "| field | value |"
-            echo "| --- | --- |"
-            echo "| version | \`${version}\` |"
-            echo "| tag | \`${release_tag}\` |"
-            echo "| commit | \`${commit}\` |"
-            echo "| SOURCE_DATE_EPOCH | \`${epoch}\` |"
-            echo "| publish | \`${publish}\` |"
-            echo "| build | \`${build}\` |"
-            if [[ "$releasable" != true ]]; then
-              echo
-              echo "**No release was cut.** ${refusal}"
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
 
   contracts:
     name: Maven verification (JDK ${{ matrix.java }})
@@ -315,6 +184,7 @@ jobs:
             fi
             cp "$jar" "$staged/"
           done
+          cp pom.xml "$staged/ratelimitly-java-client-${VERSION}.pom"
           cp target/central-dry-run-bundle.zip "$RUNNER_TEMP/"
           ls -l "$staged"
 
@@ -468,6 +338,7 @@ jobs:
             "ratelimitly-java-client-${VERSION}-javadoc.jar"
             "ratelimitly-java-client-${VERSION}-sources.jar"
             "ratelimitly-java-client-${VERSION}.jar"
+            "ratelimitly-java-client-${VERSION}.pom"
           )
 
           found=()
@@ -488,7 +359,7 @@ jobs:
             exit 1
           fi
 
-          ( cd "$assets" && sha256sum ./*.jar | sed 's#\./##' | LC_ALL=C sort -k2 > SHA256SUMS )
+          ( cd "$assets" && sha256sum ./*.jar ./*.pom | sed 's#\./##' | LC_ALL=C sort -k2 > SHA256SUMS )
           {
             echo "### Release assets"
             echo
@@ -507,112 +378,157 @@ jobs:
           retention-days: 14
 
   central:
-    name: Publish and verify Maven Central
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      needs.metadata.outputs.publish == 'true'
-    needs:
-      - metadata
-      - aggregate
+    name: Stage or verify Maven Central
+    if: needs.metadata.outputs.action != 'dry-run'
+    needs: [metadata, aggregate, preflight]
+    environment: maven-central
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
-
     steps:
-      - name: Check out exact release commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.metadata.outputs.commit }}
           persist-credentials: false
-
-      - name: Configure JDK, Central token, and release signing key
-        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+      - name: Check operator and namespace readiness
+        env:
+          APPROVED: ${{ vars.MAVEN_CENTRAL_APPROVED }}
+          FINGERPRINT: ${{ vars.MAVEN_GPG_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          test "$APPROVED" = true
+          [[ "$FINGERPRINT" =~ ^[0-9A-Fa-f]{40}$ ]]
+          mkdir -m 700 -p "$RUNNER_TEMP/release-gnupg"
+          echo "GNUPGHOME=$RUNNER_TEMP/release-gnupg" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: '21'
-          cache: maven
           server-id: central
           server-username: MAVEN_CENTRAL_USERNAME
           server-password: MAVEN_CENTRAL_TOKEN
-          gpg-private-key: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
-          gpg-passphrase: MAVEN_GPG_PASSPHRASE
-
-      - name: Download exact release assets
-        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           name: release-assets
           path: release-assets
 
-      - name: Detect safe recovery from an existing Central release
-        id: existing
-        shell: bash
+      - name: Refuse staging over a public coordinate
+        if: needs.metadata.outputs.action == 'stage'
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
-          base="https://repo1.maven.org/maven2/com/ratelimitly/ratelimitly-java-client/${VERSION}"
-          pom="ratelimitly-java-client-${VERSION}.pom"
+          # This supplements, but never replaces, the explicit Portal inspection.
+          # A 404 says nothing about a pending/validated Portal deployment.
+          url="https://repo1.maven.org/maven2/com/ratelimitly/ratelimitly-java-client/$VERSION/ratelimitly-java-client-$VERSION.pom"
+          status="$(curl --silent --show-error --connect-timeout 10 --max-time 60 --output /dev/null --write-out '%{http_code}' "$url")"
+          test "$status" = 404
 
-          # Only a confirmed 404 means the coordinate is absent. A transport failure or
-          # unavailable registry must stop recovery before a redeployment is attempted.
-          status="$(curl --silent --show-error --location --retry 3 \
-            --connect-timeout 10 --max-time 60 --write-out '%{http_code}' \
-            --output /dev/null "${base}/${pom}")"
-          case "$status" in
-            200) ;;
-            404)
-              echo "published=false" >> "$GITHUB_OUTPUT"
-              exit 0
-              ;;
-            *)
-              echo "::error::Cannot determine Central release state (HTTP ${status})"
-              exit 1
-              ;;
-          esac
-
-          # A rerun after Central succeeded but GitHub publication failed must not redeploy the
-          # immutable coordinate. It may continue only if Central contains this exact build.
-          remote="$RUNNER_TEMP/existing-central-release"
-          mkdir -p "$remote"
-          files=(
-            "$pom"
-            "ratelimitly-java-client-${VERSION}.jar"
-            "ratelimitly-java-client-${VERSION}-sources.jar"
-            "ratelimitly-java-client-${VERSION}-javadoc.jar"
-          )
-          for file in "${files[@]}"; do
-            curl --fail --silent --show-error --location --retry 3 \
-              --output "$remote/$file" "${base}/${file}"
-          done
-          cmp pom.xml "$remote/$pom"
-          for classifier in "" "-sources" "-javadoc"; do
-            file="ratelimitly-java-client-${VERSION}${classifier}.jar"
-            cmp "release-assets/$file" "$remote/$file"
-          done
-          echo "published=true" >> "$GITHUB_OUTPUT"
-          echo "Central already contains the exact release artifacts; skipping redeployment." \
-            >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Build, sign, and publish through Central Portal
-        if: steps.existing.outputs.published != 'true'
-        shell: bash
+      - name: Import dedicated signing key
+        if: needs.metadata.outputs.action == 'stage'
         env:
-          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
+          SIGNING_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          FINGERPRINT: ${{ vars.MAVEN_GPG_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_KEY"
+          printf '%s' "$SIGNING_KEY" | gpg --batch --import
+          gpg --batch --list-secret-keys "$FINGERPRINT" >/dev/null
+
+      - name: Build, compare, sign, and stage for manual Portal publication
+        if: needs.metadata.outputs.action == 'stage'
+        env:
           MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+          FINGERPRINT: ${{ vars.MAVEN_GPG_FINGERPRINT }}
           SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.epoch }}
           VERSION: ${{ needs.metadata.outputs.version }}
+          COMMIT: ${{ needs.metadata.outputs.commit }}
         run: |
           set -euo pipefail
-          mvn -B -ntp \
-            -Pcentral-release \
-            -Dproject.build.outputTimestamp="$SOURCE_DATE_EPOCH" \
-            -Drelease.expectedArtifacts="$GITHUB_WORKSPACE/release-assets" \
-            clean deploy
+          test -n "$MAVEN_CENTRAL_USERNAME"
+          test -n "$MAVEN_CENTRAL_TOKEN"
+          test -n "$MAVEN_GPG_PASSPHRASE"
+          mkdir -p "$RUNNER_TEMP/central-handoff"
+          printf 'commit=%s\nversion=%s\nrun=%s\n' "$COMMIT" "$VERSION" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/central-handoff/identity.txt"
+          mvn -B -ntp -Pcentral-release -Dcentral.skipPublishing=false \
+            "-Dcentral.deploymentName=rl-java-client-$VERSION-$COMMIT" \
+            "-Dgpg.keyname=$FINGERPRINT" \
+            "-Dproject.build.outputTimestamp=$SOURCE_DATE_EPOCH" \
+            "-Drelease.expectedArtifacts=$GITHUB_WORKSPACE/release-assets" \
+            clean deploy 2>&1 | tee "$RUNNER_TEMP/central-stage.log"
+          echo "Staged only. Inspect and publish the existing deployment in Portal, then dispatch finalize." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve staging handoff after success or interruption
+        if: always() && needs.metadata.outputs.action == 'stage'
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/central-handoff"
+          if [ -f target/central-publishing/central-bundle.zip ]; then
+            cp target/central-publishing/central-bundle.zip "$RUNNER_TEMP/central-handoff/"
+            (cd "$RUNNER_TEMP/central-handoff" && sha256sum central-bundle.zip > SHA256SUMS)
+          fi
+          if [ -f "$RUNNER_TEMP/central-stage.log" ]; then
+            grep -Eo 'deploymentId: [0-9a-fA-F-]{36}' "$RUNNER_TEMP/central-stage.log" |
+              sort -u > "$RUNNER_TEMP/central-handoff/deployment-id.txt" || true
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && needs.metadata.outputs.action == 'stage'
+        with:
+          name: central-handoff
+          path: ${{ runner.temp }}/central-handoff/*
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Verify the identified Portal deployment is already published
+        if: needs.metadata.outputs.action == 'finalize'
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
+          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "$MAVEN_CENTRAL_USERNAME"
+          test -n "$MAVEN_CENTRAL_TOKEN"
+          bearer="$(printf '%s:%s' "$MAVEN_CENTRAL_USERNAME" "$MAVEN_CENTRAL_TOKEN" | base64 -w0)"
+          echo "::add-mask::$bearer"
+          # The header is supplied on stdin, not exposed in process arguments.
+          printf 'header = "Authorization: Bearer %s"\n' "$bearer" |
+            curl --config - --fail --silent --show-error --connect-timeout 10 --max-time 60 \
+              --request POST "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID" |
+            python3 tools/publication_policy.py deployment "$DEPLOYMENT_ID" "$VERSION"
+
+      - name: Compare public unsigned artifacts with this exact build
+        if: needs.metadata.outputs.action == 'finalize'
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          FINGERPRINT: ${{ vars.MAVEN_GPG_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          base="https://repo1.maven.org/maven2/com/ratelimitly/ratelimitly-java-client/$VERSION"
+          remote="$RUNNER_TEMP/existing-central-release"
+          mkdir -p "$remote"
+          gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$FINGERPRINT"
+          for suffix in .pom .jar -sources.jar -javadoc.jar; do
+            file="ratelimitly-java-client-$VERSION$suffix"
+            curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 10 \
+              --connect-timeout 10 --max-time 60 --output "$remote/$file" "$base/$file"
+            cmp "release-assets/$file" "$remote/$file"
+            for extension in asc sha256; do
+              curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 10 \
+                --connect-timeout 10 --max-time 60 --output "$remote/$file.$extension" "$base/$file.$extension"
+            done
+            expected="$(tr -d '[:space:]' < "$remote/$file.sha256" | tr 'A-F' 'a-f')"
+            actual="$(sha256sum "$remote/$file" | cut -d ' ' -f 1)"
+            test "$expected" = "$actual"
+            gpg --batch --verify "$remote/$file.asc" "$remote/$file"
+          done
 
       - name: Verify public Central resolution with a clean named-module consumer
+        if: needs.metadata.outputs.action == 'finalize'
         shell: bash
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
@@ -621,7 +537,7 @@ jobs:
           base="https://repo1.maven.org/maven2/com/ratelimitly/ratelimitly-java-client/${VERSION}"
           pom="ratelimitly-java-client-${VERSION}.pom"
           for attempt in {1..60}; do
-            if curl --fail --silent --show-error --location --retry 2 \
+            if curl --fail --silent --show-error --location --retry 2 --connect-timeout 10 --max-time 60 \
                 --output /dev/null "${base}/${pom}"; then
               break
             fi
@@ -692,9 +608,9 @@ jobs:
   attest:
     name: Attest release assets
     if: >-
-      github.event_name == 'push' &&
+      github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
-      needs.metadata.outputs.publish == 'true'
+      needs.metadata.outputs.action == 'finalize'
     needs:
       - metadata
       - aggregate
@@ -721,9 +637,9 @@ jobs:
   publish:
     name: Publish atomic GitHub release
     if: >-
-      github.event_name == 'push' &&
+      github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
-      needs.metadata.outputs.publish == 'true'
+      needs.metadata.outputs.action == 'finalize'
     needs:
       - metadata
       - aggregate

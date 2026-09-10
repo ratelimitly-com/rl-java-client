@@ -7,6 +7,7 @@ fixture_dir="$(mktemp -d)"
 trap 'rm -rf "$fixture_dir"' EXIT
 artifact="ratelimitly-java-client-${version}"
 cp "target/${artifact}"*.jar "$fixture_dir/"
+cp pom.xml "$fixture_dir/${artifact}.pom"
 
 check_build() {
   mvn -B -ntp -Pcentral-release -DskipTests -Dgpg.skip=true \
@@ -34,4 +35,11 @@ if check_build > "$fixture_dir/missing.log" 2>&1; then
   exit 1
 fi
 grep -q 'Release artifact mismatch' "$fixture_dir/missing.log"
-echo 'Artifact gate passed: matching artifacts accepted; changed and missing artifacts rejected.'
+cp "target/${artifact}-sources.jar" "$fixture_dir/"
+printf '\n<!-- changed -->\n' >> "$fixture_dir/${artifact}.pom"
+if check_build > "$fixture_dir/pom.log" 2>&1; then
+  echo 'ERROR: Maven accepted a changed release POM' >&2
+  exit 1
+fi
+grep -q 'Release POM mismatch' "$fixture_dir/pom.log"
+echo 'Artifact gate passed: matching artifacts accepted; changed/missing JARs and changed POM rejected.'

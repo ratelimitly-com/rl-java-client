@@ -50,7 +50,8 @@
 
   <properties>
     <central.publishing.version>0.11.0</central.publishing.version>
-    <central.skipPublishing>false</central.skipPublishing>
+    <central.skipPublishing>true</central.skipPublishing>
+    <central.deploymentName>${project.artifactId}-${project.version}</central.deploymentName>
     <junit.version>5.14.4</junit.version>
     <maven.antrun.version>3.2.0</maven.antrun.version>
     <maven.clean.version>3.5.0</maven.clean.version>
@@ -182,6 +183,8 @@
             <artifactId>maven-gpg-plugin</artifactId>
             <version>${maven.gpg.version}</version>
             <configuration>
+              <bestPractices>true</bestPractices>
+              <passphraseEnvName>MAVEN_GPG_PASSPHRASE</passphraseEnvName>
               <gpgArguments>
                 <arg>--pinentry-mode</arg>
                 <arg>loopback</arg>
@@ -230,6 +233,12 @@
                     <verify-jar suffix=""/>
                     <verify-jar suffix="-sources"/>
                     <verify-jar suffix="-javadoc"/>
+                    <fail message="Release POM mismatch">
+                      <condition>
+                        <not><filesmatch file1="${project.basedir}/pom.xml"
+                            file2="${release.expectedArtifacts}/${project.build.finalName}.pom"/></not>
+                      </condition>
+                    </fail>
                     <echo>Verified reviewed release artifacts before deployment.</echo>
                   </target>
                 </configuration>
@@ -243,8 +252,10 @@
             <extensions>true</extensions>
             <configuration>
               <publishingServerId>central</publishingServerId>
-              <autoPublish>true</autoPublish>
-              <waitUntil>published</waitUntil>
+              <autoPublish>false</autoPublish>
+              <waitUntil>validated</waitUntil>
+              <failOnBuildFailure>true</failOnBuildFailure>
+              <deploymentName>${central.deploymentName}</deploymentName>
               <skipPublishing>${central.skipPublishing}</skipPublishing>
             </configuration>
           </plugin>
