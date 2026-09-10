@@ -38,7 +38,7 @@ final class ReleaseMetadataTest {
         assertContains("<maven.javadoc.version>3.12.0</maven.javadoc.version>");
         assertContains("<maven.gpg.version>3.2.8</maven.gpg.version>");
         assertContains("<central.publishing.version>0.11.0</central.publishing.version>");
-        assertContains("<central.skipPublishing>false</central.skipPublishing>");
+        assertContains("<central.skipPublishing>true</central.skipPublishing>");
         assertContains("<project.build.outputTimestamp>2026-01-01T00:00:00Z</project.build.outputTimestamp>");
         assertContains("<Automatic-Module-Name>com.ratelimitly.client</Automatic-Module-Name>");
     }
@@ -60,9 +60,10 @@ final class ReleaseMetadataTest {
         );
         assertFragment(central, "<extensions>true</extensions>");
         assertFragment(central, "<publishingServerId>central</publishingServerId>");
-        assertFragment(central, "<autoPublish>true</autoPublish>");
-        assertFragment(central, "<waitUntil>published</waitUntil>");
+        assertFragment(central, "<autoPublish>false</autoPublish>");
+        assertFragment(central, "<waitUntil>validated</waitUntil>");
         assertFragment(central, "<skipPublishing>${central.skipPublishing}</skipPublishing>");
+        assertFragment(profile, "<bestPractices>true</bestPractices>");
     }
 
     private static void assertPluginExecution(
