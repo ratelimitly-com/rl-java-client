@@ -9,7 +9,6 @@ SPEC = importlib.util.spec_from_file_location(
 policy = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(policy)
 SHA = "a" * 40
-ID = "12345678-1234-1234-1234-123456789abc"
 
 
 class PublicationPolicyTest(unittest.TestCase):
@@ -34,7 +33,7 @@ class PublicationPolicyTest(unittest.TestCase):
         values.update(changes)
         return policy.validate_request(**values)
 
-    def test_only_manual_main_can_stage(self):
+    def test_only_manual_main_can_publish(self):
         self.assertEqual(self.request(), "publish")
         for changes in ({"event": "push"}, {"event": "pull_request"},
                         {"ref": "refs/heads/feature"}, {"ref": "refs/tags/v3.0.0"}):
@@ -49,7 +48,7 @@ class PublicationPolicyTest(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.request(**changes)
 
-    def test_push_and_pr_dry_runs_allow_snapshots_but_do_not_stage(self):
+    def test_push_and_pr_dry_runs_allow_snapshots_but_do_not_publish(self):
         for event in ("push", "pull_request", "workflow_dispatch"):
             self.assertEqual(self.request(event=event, action="dry-run",
                                           version="3.0.0-SNAPSHOT"), "dry-run")
@@ -83,13 +82,15 @@ class PublicationPolicyTest(unittest.TestCase):
     def test_analysis_must_be_exact_and_successful(self):
         rows = [{"id": n, "commit_sha": SHA, "category": "/language:" + language,
                  "tool": {"name": "CodeQL"}, "error": "", "results_count": 0}
-                for n, language in enumerate(("actions", "java-kotlin"), 1)]
+                for n, language in enumerate(("actions", "java-kotlin", "python"), 1)]
         policy.validate_analyses(rows, SHA)
         for changes in ({"error": "failed"}, {"results_count": None},
                         {"commit_sha": "b" * 40}, {"tool": {"name": "other"}}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
-                policy.validate_analyses([dict(rows[0], **changes), rows[1]], SHA)
-        policy.validate_analyses([dict(rows[0], results_count=1), rows[1]], SHA)
+                policy.validate_analyses([dict(rows[0], **changes), *rows[1:]], SHA)
+        policy.validate_analyses([dict(rows[0], results_count=1), *rows[1:]], SHA)
+        with self.assertRaises(ValueError):
+            policy.validate_analyses(rows[:-1], SHA)
 
     def test_open_blocking_alerts_fail_but_reviewed_dismissals_do_not(self):
         for rule in ({"security_severity_level": "high"}, {"security_severity_level": "critical"},

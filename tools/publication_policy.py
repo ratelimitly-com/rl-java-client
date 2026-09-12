@@ -7,7 +7,7 @@ import sys
 REQUIRED_CHECKS = (
     "hygiene", "build and test (Linux, JDK 21)", "build and test (Linux, JDK 25)",
     "build and test (macOS, JDK 21)", "build and test (Windows, JDK 21)",
-    "Analyze (java-kotlin)", "Analyze (actions)",
+    "Analyze (java-kotlin)", "Analyze (actions)", "Analyze (python)",
 )
 
 
@@ -44,7 +44,7 @@ def validate_checks(rows, sha):
 
 
 def validate_analyses(rows, sha):
-    for language in ("actions", "java-kotlin"):
+    for language in ("actions", "java-kotlin", "python"):
         matches = [r for r in rows if r.get("commit_sha") == sha and
                    r.get("tool", {}).get("name") == "CodeQL" and
                    r.get("category", "").endswith("/language:" + language)]
