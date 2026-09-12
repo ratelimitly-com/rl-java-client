@@ -37,7 +37,9 @@ jobs:
         run: mvn -B -DskipTests compile
 
       - name: Test publication policy without credentials
-        run: python3 tools/test_publication_policy.py
+        run: |
+          python3 tools/test_publication_policy.py
+          python3 tools/test_registry.py
 
       - name: Report javac lint warnings
         run: |

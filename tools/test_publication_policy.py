@@ -9,7 +9,6 @@ SPEC = importlib.util.spec_from_file_location(
 policy = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(policy)
 SHA = "a" * 40
-ID = "12345678-1234-1234-1234-123456789abc"
 
 
 class PublicationPolicyTest(unittest.TestCase):
@@ -17,25 +16,25 @@ class PublicationPolicyTest(unittest.TestCase):
         root = pathlib.Path(__file__).resolve().parent.parent
         self.assertFalse((root / ".github/workflows/release.yml").exists())
         workflow = (root / ".github/workflows/publish-mvn.yml").read_text()
-        self.assertIn("environment: maven-central", workflow)
+        self.assertIn("environment: maven-publication", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
         self.assertNotIn("github.event_name == 'push' &&", workflow)
-        central = workflow.split("\n  central:\n", 1)[1].split("\n  attest:\n", 1)[0]
-        self.assertNotIn("cache: maven", central)
-        self.assertIn("MAVEN_CENTRAL_APPROVED", central)
-        self.assertIn("-Dcentral.skipPublishing=false", central)
-        self.assertIn("publication_policy.py deployment", central)
-        self.assertIn("needs.metadata.outputs.action == 'stage'", central)
+        registry = workflow.split("\n  registry:\n", 1)[1].split("\n  attest:\n", 1)[0]
+        self.assertNotIn("cache: maven", registry)
+        self.assertIn("MAVEN_PUBLICATION_APPROVED", registry)
+        self.assertIn("registry.py absent", registry)
+        self.assertIn("registry.py verify", registry)
+        self.assertNotIn("sonatype", workflow)
 
     def request(self, **changes):
         values = dict(event="workflow_dispatch", ref="refs/heads/main", sha=SHA,
                       expected_sha=SHA, version="3.0.0", expected_version="3.0.0",
-                      action="stage", attempt="1", portal_checked="true", deployment_id="")
+                      action="publish", attempt="1")
         values.update(changes)
         return policy.validate_request(**values)
 
-    def test_only_manual_main_can_stage(self):
-        self.assertEqual(self.request(), "stage")
+    def test_only_manual_main_can_publish(self):
+        self.assertEqual(self.request(), "publish")
         for changes in ({"event": "push"}, {"event": "pull_request"},
                         {"ref": "refs/heads/feature"}, {"ref": "refs/tags/v3.0.0"}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
@@ -44,22 +43,18 @@ class PublicationPolicyTest(unittest.TestCase):
     def test_exact_release_identity_and_explicit_fresh_upload_are_required(self):
         for changes in ({"sha": "short"}, {"expected_sha": "b" * 40},
                         {"version": "3.0.0-SNAPSHOT"}, {"expected_version": "3.0.1"},
-                        {"version": "3.0.0;echo bad"}, {"portal_checked": "false"},
-                        {"attempt": "2"}, {"deployment_id": ID}, {"action": "publish"}):
+                        {"version": "3.0.0;echo bad"},
+                        {"attempt": "2"}, {"action": "stage"}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 self.request(**changes)
 
-    def test_push_and_pr_dry_runs_allow_snapshots_but_do_not_stage(self):
+    def test_push_and_pr_dry_runs_allow_snapshots_but_do_not_publish(self):
         for event in ("push", "pull_request", "workflow_dispatch"):
             self.assertEqual(self.request(event=event, action="dry-run",
                                           version="3.0.0-SNAPSHOT"), "dry-run")
 
-    def test_finalize_requires_id_but_allows_reruns(self):
-        self.assertEqual(self.request(action="finalize", deployment_id=ID, attempt="2",
-                                      portal_checked="false"), "finalize")
-        for value in ("", "../../other", "bad?token=oops"):
-            with self.assertRaises(ValueError):
-                self.request(action="finalize", deployment_id=value)
+    def test_finalize_allows_reruns_without_upload(self):
+        self.assertEqual(self.request(action="finalize", attempt="2"), "finalize")
 
     def checks(self):
         return [{"id": n, "name": name, "head_sha": SHA, "app": {"id": 15368},
@@ -87,13 +82,15 @@ class PublicationPolicyTest(unittest.TestCase):
     def test_analysis_must_be_exact_and_successful(self):
         rows = [{"id": n, "commit_sha": SHA, "category": "/language:" + language,
                  "tool": {"name": "CodeQL"}, "error": "", "results_count": 0}
-                for n, language in enumerate(("actions", "java-kotlin"), 1)]
+                for n, language in enumerate(("actions", "java-kotlin", "python"), 1)]
         policy.validate_analyses(rows, SHA)
         for changes in ({"error": "failed"}, {"results_count": None},
                         {"commit_sha": "b" * 40}, {"tool": {"name": "other"}}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
-                policy.validate_analyses([dict(rows[0], **changes), rows[1]], SHA)
-        policy.validate_analyses([dict(rows[0], results_count=1), rows[1]], SHA)
+                policy.validate_analyses([dict(rows[0], **changes), *rows[1:]], SHA)
+        policy.validate_analyses([dict(rows[0], results_count=1), *rows[1:]], SHA)
+        with self.assertRaises(ValueError):
+            policy.validate_analyses(rows[:-1], SHA)
 
     def test_open_blocking_alerts_fail_but_reviewed_dismissals_do_not(self):
         for rule in ({"security_severity_level": "high"}, {"security_severity_level": "critical"},
@@ -103,17 +100,6 @@ class PublicationPolicyTest(unittest.TestCase):
             policy.validate_alerts([{"number": 1, "state": "dismissed", "rule": rule}])
         policy.validate_alerts([{"state": "open", "rule": {"severity": "warning", "security_severity_level": "low"}}])
 
-    def test_only_expected_published_deployment_can_finalize(self):
-        data = {"deploymentId": ID, "deploymentState": "PUBLISHED",
-                "purls": ["pkg:maven/com.ratelimitly/ratelimitly-java-client@3.0.0"]}
-        policy.validate_deployment(data, ID, "3.0.0")
-        for state in ("PENDING", "VALIDATING", "VALIDATED", "PUBLISHING", "FAILED", "UNKNOWN"):
-            with self.subTest(state=state), self.assertRaises(ValueError):
-                policy.validate_deployment(dict(data, deploymentState=state), ID, "3.0.0")
-        for changes in ({"deploymentId": "wrong"}, {"purls": []},
-                        {"purls": data["purls"] + ["pkg:maven/com.ratelimitly/server@3.0.0"]}):
-            with self.assertRaises(ValueError):
-                policy.validate_deployment(dict(data, **changes), ID, "3.0.0")
 
 
 if __name__ == "__main__":

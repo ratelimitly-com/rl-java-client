@@ -10,7 +10,7 @@ cp "target/${artifact}"*.jar "$fixture_dir/"
 cp pom.xml "$fixture_dir/${artifact}.pom"
 
 check_build() {
-  mvn -B -ntp -Pcentral-release -DskipTests -Dgpg.skip=true \
+  mvn -B -ntp -Pmaven-release -DskipTests -Dgpg.skip=true \
     -Dproject.build.outputTimestamp="${SOURCE_DATE_EPOCH:-2026-01-01T00:00:00Z}" \
     -Drelease.expectedArtifacts="$fixture_dir" verify
 }

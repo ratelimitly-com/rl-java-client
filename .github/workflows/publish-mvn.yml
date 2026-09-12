@@ -7,22 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: Dry run, stage for Portal review, or finalize an already published deployment
+        description: Dry run, publish to GitLab, or finalize an existing upload
         type: choice
-        options: [dry-run, stage, finalize]
+        options: [dry-run, publish, finalize]
         default: dry-run
       expected_commit:
-        description: Full main SHA (required for stage/finalize)
+        description: Full main SHA (required for publish/finalize)
         type: string
       expected_version:
-        description: Exact numeric POM version (required for stage/finalize)
-        type: string
-      portal_checked:
-        description: I inspected Portal and confirmed no previous upload needs recovery (stage only)
-        type: boolean
-        default: false
-      deployment_id:
-        description: Existing Portal deployment UUID (finalize only)
+        description: Exact numeric POM version (required for publish/finalize)
         type: string
 
 permissions:
@@ -56,15 +49,15 @@ jobs:
           distribution: temurin
           java-version: '21'
       - name: Test fail-closed publication policy
-        run: python3 tools/test_publication_policy.py
+        run: |
+          python3 tools/test_publication_policy.py
+          python3 tools/test_registry.py
       - name: Validate explicit release identity
         id: metadata
         env:
           ACTION: ${{ inputs.action || 'dry-run' }}
           EXPECTED_COMMIT: ${{ inputs.expected_commit }}
           EXPECTED_VERSION: ${{ inputs.expected_version }}
-          PORTAL_CHECKED: ${{ inputs.portal_checked }}
-          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
         run: |
           set -euo pipefail
           export COMMIT="$(git rev-parse HEAD)"
@@ -162,7 +155,7 @@ jobs:
           java -version
           mvn -v
 
-      - name: Build and validate signed Central dry run
+      - name: Build and validate signed Maven dry run
         shell: bash
         env:
           SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.epoch }}
@@ -171,8 +164,8 @@ jobs:
           set -euo pipefail
 
           # The script creates a disposable signing key and never invokes deploy. Pull requests
-          # therefore exercise signatures and Central bundle structure without registry access.
-          ./tools/build-central-dry-run.sh "$VERSION"
+          # therefore exercise signatures and Maven bundle structure without registry access.
+          ./tools/build-maven-dry-run.sh "$VERSION"
 
           staged="$RUNNER_TEMP/release-jars"
           mkdir -p "$staged"
@@ -185,7 +178,7 @@ jobs:
             cp "$jar" "$staged/"
           done
           cp pom.xml "$staged/ratelimitly-java-client-${VERSION}.pom"
-          cp target/central-dry-run-bundle.zip "$RUNNER_TEMP/"
+          cp target/maven-dry-run-bundle.zip "$RUNNER_TEMP/"
           ls -l "$staged"
 
       - name: Verify the jars are byte-reproducible
@@ -197,7 +190,7 @@ jobs:
           ( cd "$RUNNER_TEMP/release-jars" && sha256sum ./*.jar ) \
             | sed 's#\./##' | LC_ALL=C sort -k2 > "$RUNNER_TEMP/first-pass.sha256"
 
-          mvn -B -ntp -DskipTests -Pcentral-release \
+          mvn -B -ntp -DskipTests -Pmaven-release \
             -Dproject.build.outputTimestamp="$SOURCE_DATE_EPOCH" \
             clean package
 
@@ -296,11 +289,11 @@ jobs:
           compression-level: 0
           retention-days: 14
 
-      - name: Upload structural Central dry-run bundle
+      - name: Upload structural Maven dry-run bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: central-dry-run-bundle
-          path: ${{ runner.temp }}/central-dry-run-bundle.zip
+          name: maven-dry-run-bundle
+          path: ${{ runner.temp }}/maven-dry-run-bundle.zip
           if-no-files-found: error
           compression-level: 0
           retention-days: 14
@@ -377,11 +370,11 @@ jobs:
           compression-level: 0
           retention-days: 14
 
-  central:
-    name: Stage or verify Maven Central
+  registry:
+    name: Publish or verify public Maven registry
     if: needs.metadata.outputs.action != 'dry-run'
     needs: [metadata, aggregate, preflight]
-    environment: maven-central
+    environment: maven-publication
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -391,42 +384,35 @@ jobs:
         with:
           ref: ${{ needs.metadata.outputs.commit }}
           persist-credentials: false
-      - name: Check operator and namespace readiness
+      - name: Check publication readiness
         env:
-          APPROVED: ${{ vars.MAVEN_CENTRAL_APPROVED }}
+          APPROVED: ${{ vars.MAVEN_PUBLICATION_APPROVED }}
           FINGERPRINT: ${{ vars.MAVEN_GPG_FINGERPRINT }}
         run: |
           set -euo pipefail
           test "$APPROVED" = true
           [[ "$FINGERPRINT" =~ ^[0-9A-Fa-f]{40}$ ]]
+          test "$FINGERPRINT" = 89038DEBDB8BA0A63EA043E577A882D28179BB58
           mkdir -m 700 -p "$RUNNER_TEMP/release-gnupg"
           echo "GNUPGHOME=$RUNNER_TEMP/release-gnupg" >> "$GITHUB_ENV"
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: temurin
           java-version: '21'
-          server-id: central
-          server-username: MAVEN_CENTRAL_USERNAME
-          server-password: MAVEN_CENTRAL_TOKEN
+          server-id: gitlab-maven
+          server-username: GITLAB_MAVEN_USERNAME
+          server-password: GITLAB_MAVEN_TOKEN
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
           name: release-assets
           path: release-assets
-
-      - name: Refuse staging over a public coordinate
-        if: needs.metadata.outputs.action == 'stage'
+      - name: Refuse deployment over any existing package record
+        if: needs.metadata.outputs.action == 'publish'
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
-        run: |
-          set -euo pipefail
-          # This supplements, but never replaces, the explicit Portal inspection.
-          # A 404 says nothing about a pending/validated Portal deployment.
-          url="https://repo1.maven.org/maven2/com/ratelimitly/ratelimitly-java-client/$VERSION/ratelimitly-java-client-$VERSION.pom"
-          status="$(curl --silent --show-error --connect-timeout 10 --max-time 60 --output /dev/null --write-out '%{http_code}' "$url")"
-          test "$status" = 404
-
+        run: python3 tools/registry.py absent "$VERSION" ratelimitly-java-client
       - name: Import dedicated signing key
-        if: needs.metadata.outputs.action == 'stage'
+        if: needs.metadata.outputs.action == 'publish'
         env:
           SIGNING_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
           FINGERPRINT: ${{ vars.MAVEN_GPG_FINGERPRINT }}
@@ -435,106 +421,39 @@ jobs:
           test -n "$SIGNING_KEY"
           printf '%s' "$SIGNING_KEY" | gpg --batch --import
           gpg --batch --list-secret-keys "$FINGERPRINT" >/dev/null
-
-      - name: Build, compare, sign, and stage for manual Portal publication
-        if: needs.metadata.outputs.action == 'stage'
+      - name: Build, compare, sign, and publish to GitLab
+        if: needs.metadata.outputs.action == 'publish'
         env:
-          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
+          GITLAB_MAVEN_USERNAME: ${{ secrets.GITLAB_MAVEN_USERNAME }}
+          GITLAB_MAVEN_TOKEN: ${{ secrets.GITLAB_MAVEN_TOKEN }}
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
           FINGERPRINT: ${{ vars.MAVEN_GPG_FINGERPRINT }}
           SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.epoch }}
-          VERSION: ${{ needs.metadata.outputs.version }}
-          COMMIT: ${{ needs.metadata.outputs.commit }}
         run: |
           set -euo pipefail
-          test -n "$MAVEN_CENTRAL_USERNAME"
-          test -n "$MAVEN_CENTRAL_TOKEN"
+          test -n "$GITLAB_MAVEN_USERNAME"
+          test -n "$GITLAB_MAVEN_TOKEN"
           test -n "$MAVEN_GPG_PASSPHRASE"
-          mkdir -p "$RUNNER_TEMP/central-handoff"
-          printf 'commit=%s\nversion=%s\nrun=%s\n' "$COMMIT" "$VERSION" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/central-handoff/identity.txt"
-          mvn -B -ntp -Pcentral-release -Dcentral.skipPublishing=false \
-            "-Dcentral.deploymentName=rl-java-client-$VERSION-$COMMIT" \
+          mvn -B -ntp -Pmaven-release \
             "-Dgpg.keyname=$FINGERPRINT" \
             "-Dproject.build.outputTimestamp=$SOURCE_DATE_EPOCH" \
             "-Drelease.expectedArtifacts=$GITHUB_WORKSPACE/release-assets" \
-            clean deploy 2>&1 | tee "$RUNNER_TEMP/central-stage.log"
-          echo "Staged only. Inspect and publish the existing deployment in Portal, then dispatch finalize." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Preserve staging handoff after success or interruption
-        if: always() && needs.metadata.outputs.action == 'stage'
-        run: |
-          set -eu
-          mkdir -p "$RUNNER_TEMP/central-handoff"
-          if [ -f target/central-publishing/central-bundle.zip ]; then
-            cp target/central-publishing/central-bundle.zip "$RUNNER_TEMP/central-handoff/"
-            (cd "$RUNNER_TEMP/central-handoff" && sha256sum central-bundle.zip > SHA256SUMS)
-          fi
-          if [ -f "$RUNNER_TEMP/central-stage.log" ]; then
-            grep -Eo 'deploymentId: [0-9a-fA-F-]{36}' "$RUNNER_TEMP/central-stage.log" |
-              sort -u > "$RUNNER_TEMP/central-handoff/deployment-id.txt" || true
-          fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always() && needs.metadata.outputs.action == 'stage'
-        with:
-          name: central-handoff
-          path: ${{ runner.temp }}/central-handoff/*
-          if-no-files-found: warn
-          retention-days: 30
-
-      - name: Verify the identified Portal deployment is already published
-        if: needs.metadata.outputs.action == 'finalize'
-        env:
-          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
-          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
-          DEPLOYMENT_ID: ${{ inputs.deployment_id }}
-          VERSION: ${{ needs.metadata.outputs.version }}
-        run: |
-          set -euo pipefail
-          test -n "$MAVEN_CENTRAL_USERNAME"
-          test -n "$MAVEN_CENTRAL_TOKEN"
-          bearer="$(printf '%s:%s' "$MAVEN_CENTRAL_USERNAME" "$MAVEN_CENTRAL_TOKEN" | base64 -w0)"
-          echo "::add-mask::$bearer"
-          # The header is supplied on stdin, not exposed in process arguments.
-          printf 'header = "Authorization: Bearer %s"\n' "$bearer" |
-            curl --config - --fail --silent --show-error --connect-timeout 10 --max-time 60 \
-              --request POST "https://central.sonatype.com/api/v1/publisher/status?id=$DEPLOYMENT_ID" |
-            python3 tools/publication_policy.py deployment "$DEPLOYMENT_ID" "$VERSION"
-
-      - name: Compare public unsigned artifacts with this exact build
-        if: needs.metadata.outputs.action == 'finalize'
+            clean deploy
+      - name: Verify anonymous artifacts and pinned signatures
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
           FINGERPRINT: ${{ vars.MAVEN_GPG_FINGERPRINT }}
         run: |
           set -euo pipefail
-          base="https://repo1.maven.org/maven2/com/ratelimitly/ratelimitly-java-client/$VERSION"
-          remote="$RUNNER_TEMP/existing-central-release"
-          mkdir -p "$remote"
-          gpg --batch --keyserver hkps://keyserver.ubuntu.com --recv-keys "$FINGERPRINT"
-          for suffix in .pom .jar -sources.jar -javadoc.jar; do
-            file="ratelimitly-java-client-$VERSION$suffix"
-            curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 10 \
-              --connect-timeout 10 --max-time 60 --output "$remote/$file" "$base/$file"
-            cmp "release-assets/$file" "$remote/$file"
-            for extension in asc sha256; do
-              curl --fail --silent --show-error --retry 5 --retry-all-errors --retry-delay 10 \
-                --connect-timeout 10 --max-time 60 --output "$remote/$file.$extension" "$base/$file.$extension"
-            done
-            expected="$(tr -d '[:space:]' < "$remote/$file.sha256" | tr 'A-F' 'a-f')"
-            actual="$(sha256sum "$remote/$file" | cut -d ' ' -f 1)"
-            test "$expected" = "$actual"
-            gpg --batch --verify "$remote/$file.asc" "$remote/$file"
-          done
-
-      - name: Verify public Central resolution with a clean named-module consumer
-        if: needs.metadata.outputs.action == 'finalize'
+          gpg --batch --import docs/signing-key.asc
+          python3 tools/registry.py verify release-assets "$RUNNER_TEMP/verified-assets" "$VERSION" "$FINGERPRINT"
+      - name: Verify public GitLab resolution with a clean named-module consumer
         shell: bash
         env:
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           set -euo pipefail
-          base="https://repo1.maven.org/maven2/com/ratelimitly/ratelimitly-java-client/${VERSION}"
+          base="https://gitlab.com/api/v4/projects/86375734/packages/maven/com/ratelimitly/ratelimitly-java-client/${VERSION}"
           pom="ratelimitly-java-client-${VERSION}.pom"
           for attempt in {1..60}; do
             if curl --fail --silent --show-error --location --retry 2 --connect-timeout 10 --max-time 60 \
@@ -542,23 +461,28 @@ jobs:
               break
             fi
             if [[ "$attempt" == 60 ]]; then
-              echo "::error::${pom} did not become visible from Maven Central"
+              echo "::error::${pom} did not become visible from Maven GitLab"
               exit 1
             fi
             sleep 10
           done
 
-          consumer="$RUNNER_TEMP/central-consumer"
+          consumer="$RUNNER_TEMP/registry-consumer"
           mkdir -p "$consumer/src/main/java/consumer"
           cat > "$consumer/pom.xml" <<EOF
           <project xmlns="http://maven.apache.org/POM/4.0.0">
             <modelVersion>4.0.0</modelVersion>
             <groupId>test.ratelimitly</groupId>
-            <artifactId>central-consumer</artifactId>
+            <artifactId>registry-consumer</artifactId>
             <version>1</version>
             <properties>
               <maven.compiler.release>21</maven.compiler.release>
             </properties>
+            <repositories><repository>
+              <id>ratelimitly-public</id>
+              <url>https://gitlab.com/api/v4/projects/86375734/packages/maven</url>
+              <snapshots><enabled>false</enabled></snapshots>
+            </repository></repositories>
             <dependencies>
               <dependency>
                 <groupId>com.ratelimitly</groupId>
@@ -578,7 +502,7 @@ jobs:
           </project>
           EOF
           cat > "$consumer/src/main/java/module-info.java" <<'EOF'
-          module ratelimitly.central.consumer {
+          module ratelimitly.registry.consumer {
               requires com.ratelimitly.client;
           }
           EOF
@@ -600,21 +524,36 @@ jobs:
               }
           }
           EOF
-          mvn -B -ntp -U \
-            -Dmaven.repo.local="$RUNNER_TEMP/clean-central-m2" \
+          printf '<settings/>\n' > "$RUNNER_TEMP/anonymous-settings.xml"
+          mvn -B -ntp -U -s "$RUNNER_TEMP/anonymous-settings.xml" \
+            -Dmaven.repo.local="$RUNNER_TEMP/clean-registry-m2" \
             -f "$consumer/pom.xml" \
             verify
+
+      - name: Upload registry-verified signed release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-release-assets
+          path: ${{ runner.temp }}/verified-assets/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove publishing credentials from the runner
+        if: always()
+        run: |
+          gpgconf --homedir "$RUNNER_TEMP/release-gnupg" --kill all || true
+          rm -rf "$RUNNER_TEMP/release-gnupg"
+          rm -f "$HOME/.m2/settings.xml"
 
   attest:
     name: Attest release assets
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
-      needs.metadata.outputs.action == 'finalize'
+      needs.metadata.outputs.action != 'dry-run'
     needs:
       - metadata
       - aggregate
-      - central
+      - registry
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -626,7 +565,7 @@ jobs:
       - name: Download exact release assets
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
-          name: release-assets
+          name: verified-release-assets
           path: release-assets
 
       - name: Create build provenance attestations
@@ -639,11 +578,11 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
-      needs.metadata.outputs.action == 'finalize'
+      needs.metadata.outputs.action != 'dry-run'
     needs:
       - metadata
       - aggregate
-      - central
+      - registry
       - attest
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -654,7 +593,7 @@ jobs:
       - name: Download exact release assets
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
         with:
-          name: release-assets
+          name: verified-release-assets
           path: release-assets
 
       - name: Upload to a draft, verify, then publish
@@ -668,7 +607,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Central publication and clean resolution have already succeeded. Assets land on a
+          # Maven publication and clean resolution have already succeeded. Assets land on a
           # draft first so a partial GitHub upload never becomes visible.
           find release-assets -maxdepth 1 -type f -printf '%f\n' \
             | LC_ALL=C sort > "$RUNNER_TEMP/expected-assets.txt"
@@ -680,6 +619,8 @@ jobs:
             echo "Verify the assets with \`sha256sum -c SHA256SUMS\`. The jars are byte-reproducible"
             echo "from this commit."
             echo
+            echo "Registry: https://gitlab.com/api/v4/projects/86375734/packages/maven"
+            echo
             echo "Maven coordinate: \`com.ratelimitly:ratelimitly-java-client:${VERSION}\`."
           } > "$notes"
 
@@ -688,6 +629,7 @@ jobs:
               echo "::error::${TAG} is already published; refusing to overwrite it"
               exit 1
             fi
+            gh release edit "$TAG" --target "$COMMIT" --title "$TAG" --notes-file "$notes"
           else
             gh release create "$TAG" \
               --draft \
@@ -706,6 +648,10 @@ jobs:
             exit 1
           fi
 
+          # Verify uploaded bytes, not only filenames, before exposing the draft.
+          gh release download "$TAG" --dir "$RUNNER_TEMP/github-release-verification"
+          diff -r release-assets "$RUNNER_TEMP/github-release-verification"
+          (cd "$RUNNER_TEMP/github-release-verification" && sha256sum -c SHA256SUMS)
           gh release edit "$TAG" --draft=false --latest
           if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" != false ]]; then
             echo "::error::${TAG} is still a draft after publishing"

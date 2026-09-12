@@ -62,5 +62,5 @@ aliases.
 - Run the complete local checks before requesting review.
 
 Maintainers preparing an immutable release must also follow the
-[Maven Central release runbook](docs/releasing.md). Pull requests and ordinary
+[Maven release runbook](docs/releasing.md). Pull requests and ordinary
 development builds must remain credential-free and incapable of publishing.

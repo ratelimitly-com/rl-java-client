@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-version="${1:?usage: build-central-dry-run.sh VERSION}"
+version="${1:?usage: build-maven-dry-run.sh VERSION}"
 project_version="$({
   mvn -B -ntp -q \
     org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate \
@@ -33,12 +33,11 @@ gpg --batch \
 
 output_timestamp="${SOURCE_DATE_EPOCH:-2026-01-01T00:00:00Z}"
 
-# Deliberately stop at verify. The central-release profile still builds and signs every artifact,
-# while no deploy goal exists from which the Central plugin could contact the publishing service.
+# Deliberately stop at verify. The maven-release profile still builds and signs every artifact,
+# while no deploy goal exists from which the Maven plugin could contact the publishing service.
 mvn -B -ntp \
-  -Pcentral-release \
-  -Dcentral.skipPublishing=true \
+  -Pmaven-release \
   -Dproject.build.outputTimestamp="$output_timestamp" \
   clean verify
 
-"$(dirname "$0")/verify-central-artifacts.sh" target "$version"
+"$(dirname "$0")/verify-maven-artifacts.sh" target "$version"

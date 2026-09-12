@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-target_dir="${1:?usage: verify-central-artifacts.sh TARGET_DIR VERSION}"
-version="${2:?usage: verify-central-artifacts.sh TARGET_DIR VERSION}"
+target_dir="${1:?usage: verify-maven-artifacts.sh TARGET_DIR VERSION}"
+version="${2:?usage: verify-maven-artifacts.sh TARGET_DIR VERSION}"
 artifact="ratelimitly-java-client-${version}"
 
 unsigned=(
@@ -16,14 +16,14 @@ for name in "${unsigned[@]}"; do
   file="${target_dir}/${name}"
   signature="${file}.asc"
   if [[ ! -s "$file" || ! -s "$signature" ]]; then
-    echo "missing Central artifact or signature: $name" >&2
+    echo "missing Maven artifact or signature: $name" >&2
     exit 1
   fi
   gpg --batch --verify "$signature" "$file"
 done
 
-staging="$(mktemp -d "${target_dir}/central-staging.XXXXXX")"
-bundle="$(realpath "$target_dir")/central-dry-run-bundle.zip"
+staging="$(mktemp -d "${target_dir}/maven-staging.XXXXXX")"
+bundle="$(realpath "$target_dir")/maven-dry-run-bundle.zip"
 coordinate_dir="${staging}/com/ratelimitly/ratelimitly-java-client/${version}"
 mkdir -p "$coordinate_dir"
 
@@ -53,9 +53,9 @@ rm -f "$bundle"
 expected_count=$((${#unsigned[@]} * 6))
 actual_count="$(unzip -Z1 "$bundle" | wc -l | tr -d '[:space:]')"
 if [[ "$actual_count" != "$expected_count" ]]; then
-  echo "Central dry-run bundle has $actual_count entries, expected $expected_count" >&2
+  echo "Maven dry-run bundle has $actual_count entries, expected $expected_count" >&2
   exit 1
 fi
 
 unzip -t "$bundle"
-echo "Validated ${#unsigned[@]} signed artifacts and ${expected_count} Central bundle entries."
+echo "Validated ${#unsigned[@]} signed artifacts and ${expected_count} Maven bundle entries."
