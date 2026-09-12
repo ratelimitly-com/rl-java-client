@@ -5,7 +5,7 @@
 
   <groupId>com.ratelimitly</groupId>
   <artifactId>ratelimitly-java-client</artifactId>
-  <version>3.0.0-SNAPSHOT</version>
+  <version>3.0.0</version>
   <packaging>jar</packaging>
 
   <name>RateLimitly Java Client</name>
@@ -35,7 +35,7 @@
     <connection>scm:git:https://github.com/ratelimitly-com/rl-java-client.git</connection>
     <developerConnection>scm:git:ssh://git@github.com/ratelimitly-com/rl-java-client.git</developerConnection>
     <url>https://github.com/ratelimitly-com/rl-java-client</url>
-    <tag>HEAD</tag>
+    <tag>v3.0.0</tag>
   </scm>
 
   <issueManagement>
@@ -49,9 +49,6 @@
   </ciManagement>
 
   <properties>
-    <central.publishing.version>0.11.0</central.publishing.version>
-    <central.skipPublishing>true</central.skipPublishing>
-    <central.deploymentName>${project.artifactId}-${project.version}</central.deploymentName>
     <junit.version>5.14.4</junit.version>
     <maven.antrun.version>3.2.0</maven.antrun.version>
     <maven.clean.version>3.5.0</maven.clean.version>
@@ -142,7 +139,13 @@
 
   <profiles>
     <profile>
-      <id>central-release</id>
+      <id>maven-release</id>
+      <distributionManagement>
+        <repository>
+          <id>gitlab-maven</id>
+          <url>https://gitlab.com/api/v4/projects/86375734/packages/maven</url>
+        </repository>
+      </distributionManagement>
       <build>
         <plugins>
           <plugin>
@@ -244,20 +247,6 @@
                 </configuration>
               </execution>
             </executions>
-          </plugin>
-          <plugin>
-            <groupId>org.sonatype.central</groupId>
-            <artifactId>central-publishing-maven-plugin</artifactId>
-            <version>${central.publishing.version}</version>
-            <extensions>true</extensions>
-            <configuration>
-              <publishingServerId>central</publishingServerId>
-              <autoPublish>false</autoPublish>
-              <waitUntil>validated</waitUntil>
-              <failOnBuildFailure>true</failOnBuildFailure>
-              <deploymentName>${central.deploymentName}</deploymentName>
-              <skipPublishing>${central.skipPublishing}</skipPublishing>
-            </configuration>
           </plugin>
         </plugins>
       </build>

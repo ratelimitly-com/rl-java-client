@@ -19,7 +19,7 @@ final class ReleaseMetadataTest {
     }
 
     @Test
-    void declaresMavenCentralProjectMetadata() {
+    void declaresPublicMavenProjectMetadata() {
         assertContains("<groupId>com.ratelimitly</groupId>");
         assertContains("<artifactId>ratelimitly-java-client</artifactId>");
         assertContains("<url>https://github.com/ratelimitly-com/rl-java-client</url>");
@@ -37,15 +37,13 @@ final class ReleaseMetadataTest {
         assertContains("<maven.source.version>3.4.0</maven.source.version>");
         assertContains("<maven.javadoc.version>3.12.0</maven.javadoc.version>");
         assertContains("<maven.gpg.version>3.2.8</maven.gpg.version>");
-        assertContains("<central.publishing.version>0.11.0</central.publishing.version>");
-        assertContains("<central.skipPublishing>true</central.skipPublishing>");
         assertContains("<project.build.outputTimestamp>2026-01-01T00:00:00Z</project.build.outputTimestamp>");
         assertContains("<Automatic-Module-Name>com.ratelimitly.client</Automatic-Module-Name>");
     }
 
     @Test
-    void centralReleaseProfileAttachesSignsAndPublishesArtifacts() {
-        String profile = blockContaining(pom, "profile", "<id>central-release</id>");
+    void mavenReleaseProfileAttachesSignsAndPublishesArtifacts() {
+        String profile = blockContaining(pom, "profile", "<id>maven-release</id>");
 
         assertPluginExecution(profile, "maven-source-plugin", "package", "jar-no-fork");
         assertPluginExecution(profile, "maven-javadoc-plugin", "package", "jar");
@@ -53,16 +51,9 @@ final class ReleaseMetadataTest {
         assertPluginExecution(profile, "maven-antrun-plugin", "verify", "run");
         assertFragment(profile, "<excludePackageNames>com.ratelimitly.internal</excludePackageNames>");
 
-        String central = blockContaining(
-            profile,
-            "plugin",
-            "<artifactId>central-publishing-maven-plugin</artifactId>"
-        );
-        assertFragment(central, "<extensions>true</extensions>");
-        assertFragment(central, "<publishingServerId>central</publishingServerId>");
-        assertFragment(central, "<autoPublish>false</autoPublish>");
-        assertFragment(central, "<waitUntil>validated</waitUntil>");
-        assertFragment(central, "<skipPublishing>${central.skipPublishing}</skipPublishing>");
+        assertFragment(profile, "<id>gitlab-maven</id>");
+        assertFragment(profile, "<url>https://gitlab.com/api/v4/projects/86375734/packages/maven</url>");
+        assertFalse(profile.contains("org.sonatype.central"));
         assertFragment(profile, "<bestPractices>true</bestPractices>");
     }
 

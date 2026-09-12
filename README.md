@@ -121,19 +121,40 @@ RateLimitly evaluates the resource consumption and guard as one decision. A
 grant consumes the token and authorizes the work. If either condition fails,
 the complete request is rejected and nothing is consumed.
 
-## Availability
+## Installation and availability
 
-The Java client is being prepared for its first public Maven Central release.
-Until that release is published, build and test it from a source checkout:
+The first registry release, **3.0.0**, is being prepared; it is not published yet.
+Once the [GitHub release](https://github.com/ratelimitly-com/rl-java-client/releases)
+is available, add the public GitLab repository and dependency to your POM:
 
-```sh
-mvn -B verify
+```xml
+<repositories>
+  <repository>
+    <id>ratelimitly-public</id>
+    <url>https://gitlab.com/api/v4/projects/86375734/packages/maven</url>
+    <releases><enabled>true</enabled></releases>
+    <snapshots><enabled>false</enabled></snapshots>
+  </repository>
+</repositories>
+
+<dependencies>
+  <dependency>
+    <groupId>com.ratelimitly</groupId>
+    <artifactId>ratelimitly-java-client</artifactId>
+    <version>3.0.0</version>
+  </dependency>
+</dependencies>
 ```
 
-The library requires Java 21 or newer. `mvn verify` compiles the client, runs
-the complete JUnit 5 suite, and builds a JAR with the stable automatic module
-name `com.ratelimitly.client`. See the [Maven Central release
-runbook](docs/releasing.md) for publication requirements and verification.
+No GitLab account or download token is required. Source code and releases remain
+on GitHub; GitLab hosts the Maven packages. We chose GitLab's Free registry after
+Sonatype classified these clients as requiring a paid publishing subscription.
+The MIT license is unchanged. See the [distribution and release
+contract](docs/registry-publication.md).
+
+The library requires Java 21 or newer. From a source checkout, `mvn -B verify`
+runs the complete JUnit suite and builds a JAR with automatic module name
+`com.ratelimitly.client`. Publication is a separate, manually approved operation.
 
 ## Documentation
 
