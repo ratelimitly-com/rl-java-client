@@ -61,7 +61,7 @@
     <maven.javadoc.version>3.12.0</maven.javadoc.version>
     <maven.resources.version>3.3.1</maven.resources.version>
     <maven.source.version>3.4.0</maven.source.version>
-    <maven.surefire.version>3.5.6</maven.surefire.version>
+    <maven.surefire.version>3.6.0</maven.surefire.version>
     <project.build.outputTimestamp>2026-01-01T00:00:00Z</project.build.outputTimestamp>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
