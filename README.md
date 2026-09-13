@@ -123,9 +123,9 @@ the complete request is rejected and nothing is consumed.
 
 ## Installation and availability
 
-The first registry release, **3.0.0**, is being prepared; it is not published yet.
-Once the [GitHub release](https://github.com/ratelimitly-com/rl-java-client/releases)
-is available, add the public GitLab repository and dependency to your POM:
+[Version 3.0.0](https://github.com/ratelimitly-com/rl-java-client/releases/tag/v3.0.0)
+is available from our public GitLab Maven registry. Add the repository and
+dependency to your POM:
 
 ```xml
 <repositories>

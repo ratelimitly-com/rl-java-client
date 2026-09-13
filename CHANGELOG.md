@@ -4,9 +4,9 @@ This project records notable changes following
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Public releases use
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## 3.0.0 (release candidate; not yet published)
+## 3.0.0 - 2026-09-13
 
-- Prepare signed publication to the public GitLab Maven registry and matching
+- Publish signed artifacts to the public GitLab Maven registry and matching
   GitHub release assets; replace the Sonatype publisher plugin and credentials.
 - Add anonymous-download, immutable-coordinate, and interrupted-upload checks.
 
