@@ -115,12 +115,18 @@ public final class ProtocolValidation {
 
     private static void enforceRateWindowQuota(Optional<ApiKeyQuotas> quotas, RateLimitRequest request)
         throws RateLimitlyException {
-        if (quotas.isEmpty()) {
-            return;
-        }
-        long limit = quotas.get().rateWindowSizeMsMax();
+        Long limit = quotas.map(ApiKeyQuotas::rateWindowSizeMsMax).orElse(null);
         for (var resource : request.resources()) {
-            if (resource.windowSizeMs() > limit) {
+            try {
+                RateWindowUnits.toWire10ms(resource.windowSizeMs());
+            } catch (IllegalArgumentException error) {
+                throw new RateLimitlyException(
+                    RateLimitlyException.ErrorKind.CONFIGURATION,
+                    error.getMessage(),
+                    error
+                );
+            }
+            if (limit != null && resource.windowSizeMs() > limit) {
                 throw new RateLimitlyException(
                     RateLimitlyException.ErrorKind.CONFIGURATION,
                     "window_size_ms " + resource.windowSizeMs()

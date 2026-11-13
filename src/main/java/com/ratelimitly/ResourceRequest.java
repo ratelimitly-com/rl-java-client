@@ -1,5 +1,7 @@
 package com.ratelimitly;
 
+import com.ratelimitly.internal.RateWindowUnits;
+
 /**
  * Requests a quantity from one content-defined rate bucket.
  *
@@ -7,7 +9,7 @@ package com.ratelimitly;
  * values addresses a different bucket.</p>
  *
  * @param bucketName application-defined bucket name
- * @param windowSizeMs rate-window duration in milliseconds
+ * @param windowSizeMs rate-window duration in milliseconds (10 ms..365 d, multiple of 10 ms)
  * @param rateLimit token capacity for the window
  * @param tokensRequested positive token quantity to consume
  */
@@ -22,7 +24,7 @@ public record ResourceRequest(
         if (bucketName == null || bucketName.isBlank()) {
             throw new IllegalArgumentException("bucketName must not be blank");
         }
-        requireUint32("windowSizeMs", windowSizeMs);
+        RateWindowUnits.toWire10ms(windowSizeMs);
         requireUint32("rateLimit", rateLimit);
         if (tokensRequested <= 0 || tokensRequested > 0xFFFF) {
             throw new IllegalArgumentException("tokensRequested must be in the range 1..65535");

@@ -43,7 +43,7 @@ secret copies, and optional `ApiKeyQuotas`. `ApiKeyInfo.defaultDnsName()`
 returns the production discovery domain. Its rendering never contains the
 encoded key or secret bytes.
 
-The client accepts current format-version 1 request credentials. Old,
+The client accepts current format-version 2 request credentials. Old,
 malformed, and unsupported-version request credentials fail during client
 construction. A management credential is not a request credential and is
 rejected before an operation is transmitted.
@@ -58,12 +58,12 @@ Authentication modes are:
 
 ## API-key limits
 
-Format-version 1 carries these limits:
+Format-version 2 carries these limits:
 
 | Limit | Client behavior |
 | --- | --- |
 | `dedupTtlMsMax` | Rejects a request policy whose derived horizon exceeds the limit. |
-| `rateWindowSizeMsMax` | Rejects a resource whose window exceeds the limit before transmission. |
+| `rateWindowSizeMsMax` | Maximum resource window duration in ms (`null` / `isRateWindowUnlimited()` means unlimited); finite limits reject resources with larger windows before transmission. |
 | `rateBucketsMax` | Decoded for inspection; distinct-bucket capacity is enforced remotely. |
 | `latencyServicesMax` | Decoded for inspection; distinct-tracker capacity is enforced remotely. |
 | `latencyBufferSizeMax` | Decoded for inspection; tracker storage capacity is enforced remotely. |

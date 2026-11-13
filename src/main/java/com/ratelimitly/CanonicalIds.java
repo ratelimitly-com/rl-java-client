@@ -1,6 +1,7 @@
 package com.ratelimitly;
 
 import com.ratelimitly.internal.Blake2s;
+import com.ratelimitly.internal.RateWindowUnits;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
@@ -12,7 +13,7 @@ import java.util.Objects;
  */
 public final class CanonicalIds {
     private static final byte[] RESOURCE_DOMAIN =
-        "ratelimitly.resource.v1\0".getBytes(StandardCharsets.US_ASCII);
+        "ratelimitly.resource.v2\0".getBytes(StandardCharsets.US_ASCII);
     private static final byte[] LATENCY_TRACKER_DOMAIN =
         "ratelimitly.latency-tracker.v2\0".getBytes(StandardCharsets.US_ASCII);
 
@@ -23,11 +24,12 @@ public final class CanonicalIds {
      * Derives a bucket ID from a UTF-8 bucket name and its complete definition.
      *
      * @param bucketName application-defined bucket name
-     * @param windowSizeMs window duration in milliseconds
+     * @param windowSizeMs window duration in milliseconds (10 ms..365 d, multiple of 10 ms)
      * @param rateLimit token capacity for the window
      * @return a new 16-byte canonical identifier
      * @throws NullPointerException if {@code bucketName} is null
-     * @throws IllegalArgumentException if a numeric field does not fit an unsigned 32-bit integer
+     * @throws IllegalArgumentException if {@code windowSizeMs} is invalid or another numeric
+     *     field does not fit an unsigned 32-bit integer
      */
     public static byte[] bucketId(
         String bucketName,
@@ -42,19 +44,20 @@ public final class CanonicalIds {
      * Derives a bucket ID from raw name bytes and its complete definition.
      *
      * @param bucketName application-defined bucket name bytes
-     * @param windowSizeMs window duration in milliseconds
+     * @param windowSizeMs window duration in milliseconds (10 ms..365 d, multiple of 10 ms)
      * @param rateLimit token capacity for the window
      * @return a new 16-byte canonical identifier
      * @throws NullPointerException if {@code bucketName} is null
-     * @throws IllegalArgumentException if an input is too large or a numeric field does not fit
-     *     an unsigned 32-bit integer
+     * @throws IllegalArgumentException if an input is too large, {@code windowSizeMs} is invalid,
+     *     or another numeric field does not fit an unsigned 32-bit integer
      */
     public static byte[] bucketId(
         byte[] bucketName,
         long windowSizeMs,
         long rateLimit
     ) {
-        return derive(RESOURCE_DOMAIN, bucketName, windowSizeMs, rateLimit);
+        long window10ms = Integer.toUnsignedLong(RateWindowUnits.toWire10ms(windowSizeMs));
+        return derive(RESOURCE_DOMAIN, bucketName, window10ms, rateLimit);
     }
 
     /**

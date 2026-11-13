@@ -5,7 +5,39 @@ import java.util.Optional;
 
 /** Decodes and validates RateLimitly API keys without contacting a server. */
 public final class ApiKeyDecoder {
-    private static final int FORMAT_VERSION = 1;
+    private static final int FORMAT_VERSION = 2;
+    private static final long[] NAMED_RATE_WINDOW_MS = {
+        1_000L,
+        5_000L,
+        10_000L,
+        15_000L,
+        30_000L,
+        60_000L,
+        120_000L,
+        180_000L,
+        300_000L,
+        600_000L,
+        900_000L,
+        1_800_000L,
+        2_700_000L,
+        3_600_000L,
+        7_200_000L,
+        10_800_000L,
+        18_000_000L,
+        21_600_000L,
+        28_800_000L,
+        43_200_000L,
+        86_400_000L,
+        172_800_000L,
+        432_000_000L,
+        604_800_000L,
+        1_209_600_000L,
+        2_419_200_000L,
+        2_592_000_000L,
+        7_776_000_000L,
+        15_724_800_000L,
+        31_536_000_000L
+    };
 
     private ApiKeyDecoder() {
     }
@@ -100,20 +132,21 @@ public final class ApiKeyDecoder {
         int labelsExp = (int) ((word >>> 10) & 0x1F);
         int bufferExp = (int) ((word >>> 15) & 0x0F);
         int dedupUnits = (int) ((word >>> 19) & 0xFF);
-        int windowExp = (int) ((word >>> 27) & 0x1F);
-        if (rateExp > 24 || latencyExp > 24 || dedupUnits < 1 || dedupUnits > 200) {
+        int windowCode = (int) ((word >>> 27) & 0x1F);
+        if (rateExp > 24 || latencyExp > 24 || dedupUnits < 1 || dedupUnits > 200 || windowCode == 0) {
             throw new RateLimitlyException(
                 RateLimitlyException.ErrorKind.CONFIGURATION,
                 "Invalid packed API-key quota word"
             );
         }
+        Long maxWindowMs = windowCode == 31 ? null : NAMED_RATE_WINDOW_MS[windowCode - 1];
         return new ApiKeyQuotas(
             1L << rateExp,
             1L << latencyExp,
             1L << labelsExp,
             1L << bufferExp,
             dedupUnits * 10L,
-            windowExp == 31 ? 0xFFFF_FFFFL : 1L << windowExp
+            maxWindowMs
         );
     }
 
