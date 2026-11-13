@@ -18,11 +18,14 @@ public record RateLimitRequest(
     List<LatencyGuard> guards,
     String metricsLabel
 ) {
+    /** True if the request requires the QW/RW extension. */
+    public boolean wide() { return resources.stream().anyMatch(r -> r.windowSizeMs() > 0xFFFF_FFFFL); }
+
     /** Takes immutable copies and validates the number of request items. */
     public RateLimitRequest {
         resources = resources == null ? List.of() : List.copyOf(resources);
         guards = guards == null ? List.of() : List.copyOf(guards);
-        if (resources.size() > 0xFFFF || guards.size() > 0xFFFF) {
+        if (resources.size() > 16 || guards.size() > 16) {
             throw new IllegalArgumentException("resource and guard counts must fit in 16-bit counters");
         }
     }

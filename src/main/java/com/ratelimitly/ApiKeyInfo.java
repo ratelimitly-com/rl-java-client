@@ -23,6 +23,11 @@ public record ApiKeyInfo(
     byte[] authSecret,
     Optional<ApiKeyQuotas> quotas
 ) {
+    /** Returns the tagged cap without exposing the native unlimited marker. */
+    public Optional<WindowCap> windowCap() {
+        return quotas.map(q -> new WindowCap(q.unlimitedWindow(), q.unlimitedWindow() ? 0 : q.rateWindowSizeMsMax()));
+    }
+
     /** Validates the decoded fields and takes defensive copies of mutable data. */
     public ApiKeyInfo {
         if (hrp == null || hrp.isBlank()) {

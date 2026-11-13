@@ -6,6 +6,7 @@ import java.util.Optional;
 /** Decodes and validates RateLimitly API keys without contacting a server. */
 public final class ApiKeyDecoder {
     private static final int FORMAT_VERSION = 1;
+    private static final long[] V2_WINDOWS = {0L,1000L,5000L,10000L,15000L,30000L,60000L,120000L,180000L,300000L,600000L,900000L,1800000L,2700000L,3600000L,7200000L,10800000L,18000000L,21600000L,28800000L,43200000L,86400000L,172800000L,432000000L,604800000L,1209600000L,2419200000L,2592000000L,7776000000L,15724800000L,31536000000L};
 
     private ApiKeyDecoder() {
     }
@@ -74,7 +75,7 @@ public final class ApiKeyDecoder {
         requireFormatVersion(payload);
         long keyId = readLe64(payload, 1);
         ApiKeyQuotas quotas = quotasFromPayload(payload, 9);
-        return new ApiKeyInfo(hrp, authMethod, FORMAT_VERSION, keyId, new byte[0], Optional.of(quotas));
+        return new ApiKeyInfo(hrp, authMethod, Byte.toUnsignedInt(payload[0]), keyId, new byte[0], Optional.of(quotas));
     }
 
     private static ApiKeyInfo decodeApiKeyWithSecret(
@@ -90,7 +91,7 @@ public final class ApiKeyDecoder {
         byte[] secret = new byte[32];
         System.arraycopy(payload, 9, secret, 0, 32);
         ApiKeyQuotas quotas = quotasFromPayload(payload, 41);
-        return new ApiKeyInfo(hrp, authMethod, FORMAT_VERSION, keyId, secret, Optional.of(quotas));
+        return new ApiKeyInfo(hrp, authMethod, Byte.toUnsignedInt(payload[0]), keyId, secret, Optional.of(quotas));
     }
 
     private static ApiKeyQuotas quotasFromPayload(byte[] payload, int offset) throws RateLimitlyException {
@@ -107,19 +108,20 @@ public final class ApiKeyDecoder {
                 "Invalid packed API-key quota word"
             );
         }
+        if (payload[0] == 2 && windowExp == 0) throw new RateLimitlyException(RateLimitlyException.ErrorKind.CONFIGURATION, "Reserved v2 window code");
         return new ApiKeyQuotas(
             1L << rateExp,
             1L << latencyExp,
             1L << labelsExp,
             1L << bufferExp,
             dedupUnits * 10L,
-            windowExp == 31 ? 0xFFFF_FFFFL : 1L << windowExp
+            payload[0] == 2 ? (windowExp == 31 ? Long.MAX_VALUE : V2_WINDOWS[windowExp]) : (windowExp == 31 ? 0xFFFF_FFFFL : 1L << windowExp)
         );
     }
 
     private static void requireFormatVersion(byte[] payload) throws RateLimitlyException {
         int version = Byte.toUnsignedInt(payload[0]);
-        if (version != FORMAT_VERSION) {
+        if (version != 1 && version != 2) {
             throw new RateLimitlyException(
                 RateLimitlyException.ErrorKind.CONFIGURATION,
                 "Unsupported API-key format version " + version

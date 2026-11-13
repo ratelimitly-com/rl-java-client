@@ -57,13 +57,14 @@ public final class ProtocolValidation {
         RateLimitRequest request
     ) throws RateLimitlyException {
         enforceRateWindowQuota(credential.quotas(), request);
+        if (request.wide() && !config.wideRateRequests()) throw new RateLimitlyException(RateLimitlyException.ErrorKind.CONFIGURATION, "Wide-rate server support must be explicitly configured");
 
         long size = API_KEY_TLV_SIZE
             + authHeaderSize(credential.authMethod())
             + PDU_HEADER_SIZE
             + RATE_REQUEST_COUNTS_SIZE
             + ((long) request.guards().size() * GUARD_BLOCK_SIZE)
-            + ((long) request.resources().size() * RESOURCE_BLOCK_SIZE)
+            + ((long) request.resources().size() * (request.wide() ? 32 : RESOURCE_BLOCK_SIZE))
             + metricsLabelSize(request.metricsLabel());
 
         if (size > MAX_PACKET_SIZE) {

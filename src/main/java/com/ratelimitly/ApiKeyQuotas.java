@@ -25,8 +25,11 @@ public record ApiKeyQuotas(
         requireUint32("metricsLabelsMax", metricsLabelsMax);
         requireUint32("latencyBufferSizeMax", latencyBufferSizeMax);
         requireUint32("dedupTtlMsMax", dedupTtlMsMax);
-        requireUint32("rateWindowSizeMsMax", rateWindowSizeMsMax);
+        if (rateWindowSizeMsMax < 1 || (rateWindowSizeMsMax > 31536000000L && rateWindowSizeMsMax != Long.MAX_VALUE)) throw new IllegalArgumentException("invalid window cap");
     }
+
+    /** True for the explicit v2 unlimited cap, never a request duration. */
+    public boolean unlimitedWindow() { return rateWindowSizeMsMax == Long.MAX_VALUE; }
 
     private static void requireUint32(String field, long value) {
         if (value < 0 || value > 0xFFFF_FFFFL) {

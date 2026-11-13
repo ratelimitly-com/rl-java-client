@@ -22,7 +22,7 @@ public record ResourceRequest(
         if (bucketName == null || bucketName.isBlank()) {
             throw new IllegalArgumentException("bucketName must not be blank");
         }
-        requireUint32("windowSizeMs", windowSizeMs);
+        if (windowSizeMs < 1 || windowSizeMs > 31536000000L) throw new IllegalArgumentException("windowSizeMs must be 1..365 days");
         requireUint32("rateLimit", rateLimit);
         if (tokensRequested <= 0 || tokensRequested > 0xFFFF) {
             throw new IllegalArgumentException("tokensRequested must be in the range 1..65535");

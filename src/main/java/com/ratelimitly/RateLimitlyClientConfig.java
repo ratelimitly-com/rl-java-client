@@ -11,6 +11,7 @@ import java.util.concurrent.Executor;
  * redacted from this object's string representation.</p>
  */
 public final class RateLimitlyClientConfig {
+    private final boolean wideRateRequests;
     private final String apiKey;
     private final String dnsNameOverride;
     private final long dnsTimeoutMs;
@@ -35,6 +36,7 @@ public final class RateLimitlyClientConfig {
         requestPolicy = Objects.requireNonNull(builder.requestPolicy, "requestPolicy");
         dnsResolver = builder.dnsResolver;
         asyncExecutor = builder.asyncExecutor;
+        wideRateRequests = builder.wideRateRequests;
     }
 
     /**
@@ -44,6 +46,9 @@ public final class RateLimitlyClientConfig {
      * @return a new configuration builder
      * @throws IllegalArgumentException if the key is null or blank
      */
+    /** Whether the caller explicitly configured wide-capable server support. */
+    public boolean wideRateRequests() { return wideRateRequests; }
+
     public static Builder builder(String apiKey) {
         return new Builder(apiKey);
     }
@@ -122,6 +127,10 @@ public final class RateLimitlyClientConfig {
 
     /** Mutable builder for one immutable {@link RateLimitlyClientConfig}. */
     public static final class Builder {
+        private boolean wideRateRequests;
+        /** Explicitly enable requests over uint32 ms; requires server capability bit 5. */
+        public Builder wideRateRequests(boolean supported) { wideRateRequests = supported; return this; }
+
         private final String apiKey;
         private String dnsNameOverride;
         private long dnsTimeoutMs = 1_000;

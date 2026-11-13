@@ -52,6 +52,7 @@ public final class ProtocolCodec {
         RateLimitRequest request,
         UUID requestId
     ) throws RateLimitlyException {
+        ProtocolValidation.validateRateLimitRequest(config, credential, request);
         byte[] body = buildRateRequestBody(request);
         long dedupLimit = credential.quotas()
             .map(quotas -> quotas.dedupTtlMsMax())
@@ -66,7 +67,7 @@ public final class ProtocolCodec {
                 error
             );
         }
-        byte[] pdu = buildRateRequestPdu((int) horizon, body);
+        byte[] pdu = buildRateRequestPdu((int) horizon, body, request.wide());
         return encodePacket(config, credential, requestId, pdu);
     }
 
@@ -165,7 +166,7 @@ public final class ProtocolCodec {
     private static byte[] buildRateRequestBody(RateLimitRequest request) throws RateLimitlyException {
         int tlvSize = request.metricsLabel() == null ? 0 : MetricsLabelTlv.encode(request.metricsLabel()).length;
         ByteBuffer body = ByteBuffer.allocate(
-            4 + (request.guards().size() * GUARD_BLOCK_SIZE) + (request.resources().size() * RESOURCE_BLOCK_SIZE) + tlvSize
+            4 + (request.guards().size() * GUARD_BLOCK_SIZE) + (request.resources().size() * (request.wide() ? 32 : RESOURCE_BLOCK_SIZE)) + tlvSize
         ).order(ByteOrder.LITTLE_ENDIAN);
 
         body.putShort((short) request.guards().size());
@@ -191,7 +192,7 @@ public final class ProtocolCodec {
                 resource.windowSizeMs(),
                 resource.rateLimit()
             ));
-            body.putInt((int) resource.windowSizeMs());
+            if (request.wide()) body.putLong(resource.windowSizeMs()); else body.putInt((int) resource.windowSizeMs());
             body.putInt((int) resource.rateLimit());
             body.putShort((short) resource.tokensRequested());
             body.putShort((short) 0);
@@ -224,9 +225,9 @@ public final class ProtocolCodec {
         return body.array();
     }
 
-    private static byte[] buildRateRequestPdu(int dedupTtlMs, byte[] body) {
+    private static byte[] buildRateRequestPdu(int dedupTtlMs, byte[] body, boolean wide) {
         ByteBuffer pdu = ByteBuffer.allocate(PDU_HEADER_SIZE + body.length).order(ByteOrder.LITTLE_ENDIAN);
-        pdu.putShort((short) PDU_RATE_REQUEST);
+        pdu.putShort((short)(wide ? 0x5751 : PDU_RATE_REQUEST));
         pdu.putShort((short) (PDU_HEADER_SIZE + body.length));
         pdu.putInt(dedupTtlMs);
         pdu.put(body);
@@ -327,9 +328,11 @@ public final class ProtocolCodec {
         }
         int pduType = Short.toUnsignedInt(buffer.getShort());
         int pduSize = Short.toUnsignedInt(buffer.getShort());
-        if (pduType != PDU_RATE_RESPONSE || pduSize < PDU_HEADER_SIZE || pdu.length < pduSize) {
+        if (pduType != (request.wide() ? 0x5752 : PDU_RATE_RESPONSE) || pduSize < PDU_HEADER_SIZE || pdu.length < pduSize) {
             throw protocol("Invalid rate response PDU");
         }
+        if (pduSize < 12 + request.guards().size()*36 + request.resources().size()*(request.wide() ? 32 : 28)) throw protocol("Truncated response blocks");
+        buffer.limit(pduSize);
         buffer.getInt(); // reserved
         int guardCount = Short.toUnsignedInt(buffer.getShort());
         int resourceCount = Short.toUnsignedInt(buffer.getShort());
@@ -352,7 +355,7 @@ public final class ProtocolCodec {
         List<ResourceDecision> resources = new ArrayList<>(resourceCount);
         for (int i = 0; i < resourceCount; i++) {
             buffer.position(buffer.position() + 16);
-            buffer.getInt();
+            if (request.wide()) buffer.getLong(); else buffer.getInt();
             long actualRate = Integer.toUnsignedLong(buffer.getInt());
             int deficit = Short.toUnsignedInt(buffer.getShort());
             buffer.getShort();

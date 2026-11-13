@@ -54,7 +54,12 @@ public final class CanonicalIds {
         long windowSizeMs,
         long rateLimit
     ) {
-        return derive(RESOURCE_DOMAIN, bucketName, windowSizeMs, rateLimit);
+        if (windowSizeMs <= 0xFFFF_FFFFL) return derive(RESOURCE_DOMAIN, bucketName, windowSizeMs, rateLimit);
+        if (windowSizeMs > 31536000000L || rateLimit < 0 || rateLimit > 0xFFFF_FFFFL) throw new IllegalArgumentException("invalid wide resource");
+        byte[] domain = "ratelimitly.resource.v2\0".getBytes(StandardCharsets.US_ASCII);
+        ByteBuffer input = ByteBuffer.allocate(Math.addExact(domain.length + 16, bucketName.length)).order(ByteOrder.LITTLE_ENDIAN);
+        input.put(domain).putInt(bucketName.length).put(bucketName).putLong(windowSizeMs).putInt((int)rateLimit);
+        return Arrays.copyOf(Blake2s.digest(input.array()), 16);
     }
 
     /**
