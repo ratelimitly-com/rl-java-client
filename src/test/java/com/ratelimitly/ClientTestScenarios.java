@@ -27,7 +27,39 @@ import org.junit.jupiter.api.Assumptions;
 final class ClientTestScenarios {
     private static final String UNREACHABLE_PROBE_HOST = "100::1";
     private static final String SAMPLE_NONE_API_KEY =
-        "rl-none1qyyqwps9qspsyq2sk8e0sfdp3ys";
+        "rl-none1qgyqwps9qspsyq2sk8e0shcgndc";
+    private static final long[] NAMED_RATE_WINDOW_MS = {
+        1_000L,
+        5_000L,
+        10_000L,
+        15_000L,
+        30_000L,
+        60_000L,
+        120_000L,
+        180_000L,
+        300_000L,
+        600_000L,
+        900_000L,
+        1_800_000L,
+        2_700_000L,
+        3_600_000L,
+        7_200_000L,
+        10_800_000L,
+        18_000_000L,
+        21_600_000L,
+        28_800_000L,
+        43_200_000L,
+        86_400_000L,
+        172_800_000L,
+        432_000_000L,
+        604_800_000L,
+        1_209_600_000L,
+        2_419_200_000L,
+        2_592_000_000L,
+        7_776_000_000L,
+        15_724_800_000L,
+        31_536_000_000L
+    };
 
     private ClientTestScenarios() {
     }
@@ -35,16 +67,17 @@ final class ClientTestScenarios {
     static void testDecodeNoneCredential() throws Exception {
         ApiKeyInfo decoded = ApiKeyDecoder.decode(SAMPLE_NONE_API_KEY);
         check(decoded.authMethod() == AuthMethod.NONE, "expected NONE auth");
-        check(decoded.formatVersion() == 1, "expected API-key format version 1");
+        check(decoded.formatVersion() == 2, "expected API-key format version 2");
         check(decoded.keyId() == 0x0102030405060708L, "expected canonical API-key ID");
         check(decoded.quotas().isPresent(), "expected quotas in none credential");
         check(decoded.quotas().get().latencyBufferSizeMax() == 32L, "expected latency_buffer_size_max 32");
         check(decoded.quotas().get().dedupTtlMsMax() == 300L, "expected dedup_ttl_ms_max 300");
-        check(decoded.quotas().get().rateWindowSizeMsMax() == 0xFFFF_FFFFL, "expected full u32 rate window");
+        check(decoded.quotas().get().isRateWindowUnlimited(), "expected unlimited rate window");
+        check(decoded.quotas().get().rateWindowSizeMsMax() == null, "expected null max rate window");
     }
 
     static void testDecodeCookieAndAesCredentials() throws Exception {
-        ApiKeyQuotas quotas = new ApiKeyQuotas(65_536, 1_024, 4_096, 32, 300, 0xFFFF_FFFFL);
+        ApiKeyQuotas quotas = new ApiKeyQuotas(65_536, 1_024, 4_096, 32, 300, null);
         String cookieKey = encodeApiKey("cookie", 2L, repeat((byte) 2, 32), quotas);
         String aesKey = encodeApiKey("aes", 3L, repeat((byte) 3, 32), quotas);
 
@@ -63,7 +96,7 @@ final class ClientTestScenarios {
 
     static void testCredentialSafety() throws Exception {
         byte[] expectedSecret = repeat((byte) 0x5A, 32);
-        ApiKeyQuotas quotas = new ApiKeyQuotas(65_536, 1_024, 4_096, 32, 300, 0xFFFF_FFFFL);
+        ApiKeyQuotas quotas = new ApiKeyQuotas(65_536, 1_024, 4_096, 32, 300, null);
         String apiKey = encodeApiKey("aes", 7L, expectedSecret, quotas);
         RateLimitlyClientConfig config = RateLimitlyClientConfig.builder(apiKey).dnsName("example.local").build();
         ApiKeyInfo decoded = ApiKeyDecoder.decode(apiKey);
@@ -100,7 +133,7 @@ final class ClientTestScenarios {
             "secret",
             0,
             repeat((byte) 0x2A, 32),
-            new ApiKeyQuotas(1, 1, 1, 1, 10, 1)
+            new ApiKeyQuotas(1, 1, 1, 1, 10, 1_000L)
         );
         try {
             RateLimitlyClients.create(RateLimitlyClientConfig.builder(managementKey).build());
@@ -111,16 +144,31 @@ final class ClientTestScenarios {
         }
     }
 
-    static void testRejectInvalidApiKeyV1Boundaries() throws Exception {
+    static void testRejectInvalidApiKeyV2Boundaries() throws Exception {
+        ApiKeyQuotas free = ApiKeyDecoder.decode(
+            "rl-aes1qgpqqqqqqqqqqqqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqghjmu3sdl8zyx"
+        ).quotas().orElseThrow();
+        check(Long.valueOf(60_000L).equals(free.rateWindowSizeMsMax()), "expected 60000 ms free tier window");
+        ApiKeyQuotas maxFinite = ApiKeyDecoder.decode(
+            "rl-cookie1qgrqqqqqqqqqqqqxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqegtruhsezeama"
+        ).quotas().orElseThrow();
+        check(Long.valueOf(31_536_000_000L).equals(maxFinite.rateWindowSizeMsMax()), "expected 365d finite window");
+
         for (String invalid : List.of(
+            "rl-none1qyyqwps9qspsyq2sk8e0sfdp3ys",
+            "rl-aes1qypqqqqqqqqqqqqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqghjmuhcc2h27q",
             "rl-aes1qqpqqqqqqqqqqqqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqghjmuhccp9vn9",
-            "rl-aes1qgpqqqqqqqqqqqqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqghjmuhcchgqf0",
-            "rl-aes1qyysqqqqqqqqqqqfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyqqqqqqurys6m",
-            "rl-aes1qyysqqqqqqqqqqqfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyvsqzqqs45cew"
+            "rl-aes1qvpqqqqqqqqqqqqzqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqghjmuhccu6xy2",
+            "rl-aes1qgysqqqqqqqqqqqfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyvsqzqgwu07su",
+            "rl-aes1qgysqqqqqqqqqqqfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfp8sqxzqglcu0vh",
+            "rl-aes1qgysqqqqqqqqqqqfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyqqqqqgz2lknf",
+            "rl-aes1qgysqqqqqqqqqqqfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyqqqjqwngn9ns",
+            "rl-aes1qgysqqqqqqqqqqqfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyysjzgfpyqqqzqqc6fakd",
+            "rl-aes1qvqqqqqqqqqqqqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqvpsxqcrqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqemrljn"
         )) {
             try {
                 ApiKeyDecoder.decode(invalid);
-                throw new AssertionError("accepted invalid API key");
+                throw new AssertionError("accepted invalid API key: " + invalid);
             } catch (RateLimitlyException expected) {
                 // Expected strict format-version or packed-quota rejection.
             }
@@ -149,9 +197,44 @@ final class ClientTestScenarios {
     static void testCanonicalStateIdVectors() {
         check(
             toHex(CanonicalIds.bucketId("checkout", 1000, 100))
-                .equals("f5cf3ad8b8406854b596ba3614f16eff"),
+                .equals("67f3b7c9ab155308089e20ca8d943909"),
             "unexpected canonical checkout bucket ID"
         );
+        check(
+            toHex(CanonicalIds.bucketId("café", 60_000, 25))
+                .equals("d9cf1a0af970aa9dff86fac0605fae42"),
+            "unexpected canonical UTF-8 bucket ID"
+        );
+        byte[] binaryBucket = {
+            'b', 'i', 'n', 'a', 'r', 'y', 0, 'b', 'u', 'c', 'k', 'e', 't'
+        };
+        check(
+            toHex(CanonicalIds.bucketId(binaryBucket, 31_536_000_000L, 0xFFFF_FFFFL))
+                .equals("552c6b8185f1d61ebc3ccc65f446ec88"),
+            "unexpected max finite window embedded-NUL bucket ID"
+        );
+        check(
+            toHex(CanonicalIds.bucketId("a", 10, 1))
+                .equals("5b0b0d61aa7c806a0ff9e5973bf3cacb"),
+            "unexpected canonical 10ms bucket ID"
+        );
+        for (long invalidWindow : new long[] {0L, 5L, 15L, 31_536_000_010L}) {
+            boolean rejectedBucketId = false;
+            try {
+                CanonicalIds.bucketId("bad", invalidWindow, 1L);
+            } catch (IllegalArgumentException expected) {
+                rejectedBucketId = true;
+            }
+            check(rejectedBucketId, "bucketId rejected invalid window " + invalidWindow);
+
+            boolean rejectedResource = false;
+            try {
+                new ResourceRequest("bad", invalidWindow, 1L, 1);
+            } catch (IllegalArgumentException expected) {
+                rejectedResource = true;
+            }
+            check(rejectedResource, "ResourceRequest rejected invalid window " + invalidWindow);
+        }
         check(
             toHex(CanonicalIds.latencyTrackerId("inventory-backend", 10000, 100, 5))
                 .equals("6a17d07a424568304e50d28540f76e67"),
@@ -187,6 +270,7 @@ final class ClientTestScenarios {
         UUID requestId = UUID.randomUUID();
         ProtocolCodec.EncodedRequest encoded = ProtocolCodec.encodeRateLimitRequest(config, credential, request, requestId);
         byte[] packet = encoded.packet();
+        check(readLe16(packet, 44) == 0x3254, "expected T2 rate request PDU");
         int guardOffset = 40 + 4 + 8 + 4;
         int resourceOffset = guardOffset + 36;
         check(
@@ -196,9 +280,13 @@ final class ClientTestScenarios {
         );
         check(
             toHex(Arrays.copyOfRange(packet, resourceOffset, resourceOffset + 16))
-                .equals("f5cf3ad8b8406854b596ba3614f16eff"),
+                .equals("67f3b7c9ab155308089e20ca8d943909"),
             "expected canonical bucket ID in resource block"
         );
+        int encodedWindow10ms = ByteBuffer.wrap(packet, resourceOffset + 16, 4)
+            .order(ByteOrder.LITTLE_ENDIAN)
+            .getInt();
+        check(encodedWindow10ms == 100, "expected 1000ms encoded as 100 units of 10ms");
     }
 
     static void testLatencyReportUses32ByteBlocks() throws Exception {
@@ -246,11 +334,11 @@ final class ClientTestScenarios {
     }
 
     static void testRateWindowQuotaEnforcement() throws Exception {
-        ApiKeyQuotas quotas = new ApiKeyQuotas(65_536, 1_024, 4_096, 32, 300, 1_024);
+        ApiKeyQuotas quotas = new ApiKeyQuotas(65_536, 1_024, 4_096, 32, 300, 1_000L);
         String key = encodeApiKey("none", 9, new byte[0], quotas);
         RateLimitlyClientConfig config = RateLimitlyClientConfig.builder(key).dnsName("example.local").build();
         RateLimitRequest request = new RateLimitRequest(
-            List.of(new ResourceRequest("bucket", 1_025, 100, 1)),
+            List.of(new ResourceRequest("bucket", 5_000, 100, 1)),
             List.of(),
             null
         );
@@ -260,6 +348,20 @@ final class ClientTestScenarios {
         } catch (RateLimitlyException expected) {
             check(expected.getMessage().contains("rate_window_size_ms_max"), "expected rate-window quota error");
         }
+
+        ApiKeyQuotas unlimitedQuotas = new ApiKeyQuotas(65_536, 1_024, 4_096, 32, 300, null);
+        String unlimitedKey = encodeApiKey("none", 10, new byte[0], unlimitedQuotas);
+        RateLimitlyClientConfig unlimitedConfig =
+            RateLimitlyClientConfig.builder(unlimitedKey).dnsName("example.local").build();
+        ProtocolValidation.validateRateLimitRequest(
+            unlimitedConfig,
+            ApiKeyDecoder.decode(unlimitedKey),
+            new RateLimitRequest(
+                List.of(new ResourceRequest("bucket", 31_536_000_000L, 100, 1)),
+                List.of(),
+                null
+            )
+        );
     }
 
     static void testUnifiedPolicySchedules() {
@@ -328,7 +430,7 @@ final class ClientTestScenarios {
     }
 
     static void testRateResponseRoundTripAesAuth() throws Exception {
-        ApiKeyQuotas quotas = new ApiKeyQuotas(65_536, 1_024, 4_096, 32, 300, 0xFFFF_FFFFL);
+        ApiKeyQuotas quotas = new ApiKeyQuotas(65_536, 1_024, 4_096, 32, 300, null);
         String aesKey = encodeApiKey("aes", 3L, repeat((byte) 3, 32), quotas);
         RateLimitlyClientConfig config = RateLimitlyClientConfig.builder(aesKey).dnsName("example.local").build();
         ApiKeyInfo credential = ApiKeyDecoder.decode(aesKey);
@@ -897,12 +999,12 @@ final class ClientTestScenarios {
         byte[] payload = switch (authMethod) {
             case "secret" -> secret;
             case "none" -> concat(
-                new byte[] {1},
+                new byte[] {2},
                 toLe64(keyId),
                 quotaWord
             );
             case "cookie", "aes" -> concat(
-                new byte[] {1},
+                new byte[] {2},
                 toLe64(keyId),
                 secret,
                 quotaWord
@@ -917,14 +1019,26 @@ final class ClientTestScenarios {
         int latencyExp = Long.numberOfTrailingZeros(quotas.latencyServicesMax());
         int labelsExp = Long.numberOfTrailingZeros(quotas.metricsLabelsMax());
         int bufferExp = Long.numberOfTrailingZeros(quotas.latencyBufferSizeMax());
-        int windowExp = quotas.rateWindowSizeMsMax() == 0xFFFF_FFFFL
-            ? 31 : Long.numberOfTrailingZeros(quotas.rateWindowSizeMsMax());
+        int windowCode = 31;
+        if (!quotas.isRateWindowUnlimited()) {
+            windowCode = -1;
+            long target = quotas.rateWindowSizeMsMax();
+            for (int i = 0; i < NAMED_RATE_WINDOW_MS.length; i++) {
+                if (NAMED_RATE_WINDOW_MS[i] == target) {
+                    windowCode = i + 1;
+                    break;
+                }
+            }
+            if (windowCode < 0) {
+                throw new IllegalArgumentException("unsupported rateWindowSizeMsMax: " + target);
+            }
+        }
         return rateExp
             | ((long) latencyExp << 5)
             | ((long) labelsExp << 10)
             | ((long) bufferExp << 15)
             | ((quotas.dedupTtlMsMax() / 10) << 19)
-            | ((long) windowExp << 27);
+            | ((long) windowCode << 27);
     }
 
     private static String bech32Encode(String hrp, byte[] payload) {
@@ -1096,7 +1210,7 @@ final class ClientTestScenarios {
     private static byte[] buildRateResponsePdu(long[] currentLatencies, int[] deficits, long[] actualRates) {
         ByteBuffer buffer = ByteBuffer.allocate(8 + 4 + (currentLatencies.length * 36) + (deficits.length * 28))
             .order(ByteOrder.LITTLE_ENDIAN);
-        buffer.putShort((short) 0x5252);
+        buffer.putShort((short) 0x3252);
         buffer.putShort((short) (8 + 4 + (currentLatencies.length * 36) + (deficits.length * 28)));
         buffer.putInt(0);
         buffer.putShort((short) currentLatencies.length);
@@ -1111,7 +1225,7 @@ final class ClientTestScenarios {
         }
         for (int i = 0; i < deficits.length; i++) {
             buffer.put(new byte[16]);
-            buffer.putInt(1000);
+            buffer.putInt(100);
             buffer.putInt((int) actualRates[i]);
             buffer.putShort((short) deficits[i]);
             buffer.putShort((short) 0);

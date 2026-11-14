@@ -30,6 +30,6 @@ final class ApiKeyTest {
 
     @Test
     void rejectsInvalidVersionAndQuotaBoundaries() throws Exception {
-        ClientTestScenarios.testRejectInvalidApiKeyV1Boundaries();
+        ClientTestScenarios.testRejectInvalidApiKeyV2Boundaries();
     }
 }

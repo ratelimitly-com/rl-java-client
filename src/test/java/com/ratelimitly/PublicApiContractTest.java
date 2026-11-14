@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 
 final class PublicApiContractTest {
     private static final String SAMPLE_API_KEY =
-        "rl-none1qyyqwps9qspsyq2sk8e0sfdp3ys";
+        "rl-none1qgyqwps9qspsyq2sk8e0shcgndc";
 
     private PublicApiContractTest() {
     }

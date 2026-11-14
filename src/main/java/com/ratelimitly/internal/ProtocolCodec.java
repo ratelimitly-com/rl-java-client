@@ -29,8 +29,8 @@ public final class ProtocolCodec {
     private static final int TLV_AUTH_NONE = 0x414E;
     private static final int TLV_AUTH_COOKIE = 0x4143;
     private static final int TLV_AUTH_AES = 0x4541;
-    private static final int PDU_RATE_REQUEST = 0x5452;
-    private static final int PDU_RATE_RESPONSE = 0x5252;
+    private static final int PDU_RATE_REQUEST = 0x3254;
+    private static final int PDU_RATE_RESPONSE = 0x3252;
     private static final int PDU_LATENCY_REPORT = 0x524C;
     private static final int API_KEY_TLV_SIZE = 40;
     private static final int PDU_HEADER_SIZE = 8;
@@ -191,7 +191,7 @@ public final class ProtocolCodec {
                 resource.windowSizeMs(),
                 resource.rateLimit()
             ));
-            body.putInt((int) resource.windowSizeMs());
+            body.putInt(RateWindowUnits.toWire10ms(resource.windowSizeMs()));
             body.putInt((int) resource.rateLimit());
             body.putShort((short) resource.tokensRequested());
             body.putShort((short) 0);
@@ -352,7 +352,7 @@ public final class ProtocolCodec {
         List<ResourceDecision> resources = new ArrayList<>(resourceCount);
         for (int i = 0; i < resourceCount; i++) {
             buffer.position(buffer.position() + 16);
-            buffer.getInt();
+            buffer.getInt(); // window_size_10ms
             long actualRate = Integer.toUnsignedLong(buffer.getInt());
             int deficit = Short.toUnsignedInt(buffer.getShort());
             buffer.getShort();
