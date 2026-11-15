@@ -49,6 +49,7 @@ final class DefaultRateLimitlyClient implements RateLimitlyClient {
     private final ExecutorService ownedAsyncExecutor;
     private final AtomicBoolean closed = new AtomicBoolean();
     private final Object ioLock = new Object();
+    private final TrafficCounters traffic = new TrafficCounters();
     private final ConcurrentMap<Long, MutableServerStats> serverStats = new ConcurrentHashMap<>();
     private final ConcurrentMap<UUID, BlockingQueue<ResponsePacket>> inflight = new ConcurrentHashMap<>();
     private final Set<Thread> responseRouterThreads = ConcurrentHashMap.newKeySet();
@@ -205,6 +206,9 @@ final class DefaultRateLimitlyClient implements RateLimitlyClient {
         }
         return new ClientDiagnostics(endpoints, lastDnsRefresh, snapshot, steeringFeedbackZeroCount, portChanges);
     }
+
+    @Override
+    public TrafficStats trafficStats() { return traffic.snapshot(); }
 
     @Override
     public void close() {
@@ -570,6 +574,7 @@ final class DefaultRateLimitlyClient implements RateLimitlyClient {
                 try {
                     packet.setLength(buffer.length);
                     routerSocket.receive(packet);
+                    traffic.record(false, packet.getLength(), packet.getAddress());
                     UUID requestId = peekRequestId(packet.getData(), packet.getOffset(), packet.getLength());
                     if (requestId == null) {
                         continue;
@@ -597,6 +602,7 @@ final class DefaultRateLimitlyClient implements RateLimitlyClient {
     private void sendPacket(DatagramSocket requestSocket, ResolvedServer server, byte[] packet)
         throws RateLimitlyException {
         if (requestSocket == null || requestSocket.isClosed()) {
+            traffic.failedSend();
             throw new RateLimitlyException(
                 RateLimitlyException.ErrorKind.TRANSPORT_IO,
                 "UDP socket is not available"
@@ -609,7 +615,9 @@ final class DefaultRateLimitlyClient implements RateLimitlyClient {
                 new InetSocketAddress(server.address(), server.port())
             );
             requestSocket.send(datagram);
+            traffic.record(true, packet.length, server.address());
         } catch (Exception e) {
+            traffic.failedSend();
             throw new RateLimitlyException(
                 RateLimitlyException.ErrorKind.TRANSPORT_IO,
                 "Failed to send UDP packet to " + server.address().getHostAddress() + ":" + server.port(),
