@@ -32,6 +32,7 @@ final class TrafficTest {
         try (DatagramSocket server = new DatagramSocket(0, loopback)) {
             server.setSoTimeout(2000);
             List<Integer> sentLengths = new ArrayList<>();
+            List<Integer> sourcePorts = new ArrayList<>();
             CompletableFuture<Void> responder = CompletableFuture.runAsync(() -> {
                 try {
                     byte[] first = null;
@@ -40,13 +41,14 @@ final class TrafficTest {
                         server.receive(packet);
                         byte[] data = Arrays.copyOf(packet.getData(), packet.getLength());
                         sentLengths.add(data.length);
+                        sourcePorts.add(packet.getPort());
                         if (i == 0) first = data; // deliberately drop initial send
                         if (i == 1) {
                             assertArrayEquals(first, data);
                             ByteBuffer b = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN);
-                            b.putLong(4, 21L); b.put(36, (byte) 1);
+                            b.putLong(4, 21L); b.put(36, (byte) 0);
                             b.putShort(44, (short) 0x3252); b.putShort(80, (short) 0);
-                            server.send(new DatagramPacket(new byte[7], 7, packet.getSocketAddress()));
+                            server.send(new DatagramPacket(new byte[4200], 4200, packet.getSocketAddress()));
                             server.send(new DatagramPacket(data, data.length, packet.getSocketAddress()));
                         }
                     }
@@ -68,9 +70,10 @@ final class TrafficTest {
                 assertEquals(BigInteger.valueOf(sentLengths.stream().mapToInt(Integer::intValue).sum()), stats.sent().payloadBytes());
                 assertEquals(stats.sent().payloadBytes().add(BigInteger.valueOf(84)), stats.sent().ipBytes());
                 assertEquals(BigInteger.valueOf(2), stats.received().datagrams());
-                assertEquals(BigInteger.valueOf(84 + 7 + 56), stats.received().ipBytes());
+                assertEquals(BigInteger.valueOf(84 + 4200 + 56), stats.received().ipBytes());
                 assertEquals(BigInteger.ZERO, stats.sendFailures());
                 assertFalse(stats.incomplete());
+                assertNotEquals(sourcePorts.get(1), sourcePorts.get(2));
             }
             assertEquals(stats, client.trafficStats());
         }

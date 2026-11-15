@@ -38,7 +38,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 final class DefaultRateLimitlyClient implements RateLimitlyClient {
     private static final int ROUTER_SOCKET_TIMEOUT_MS = 250;
-    private static final int RECEIVE_BUFFER_SIZE = 2048;
+    // Count complete physical UDP receives, even oversized invalid protocol data.
+    private static final int RECEIVE_BUFFER_SIZE = 65_535;
     private static final int STEERING_PORT_BASE = 49_152;
     private static final int STEERING_PORT_SPAN = 16_384;
 
