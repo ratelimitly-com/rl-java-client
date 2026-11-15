@@ -58,6 +58,15 @@ public interface RateLimitlyClient extends AutoCloseable {
     ClientDiagnostics diagnostics();
 
     /**
+     * Returns lifetime physical UDP counters without sending traffic. DNS is excluded.
+     * IP bytes use minimal IP+UDP headers (28 for IPv4, 48 for IPv6).
+     * A client may close before all replica replies arrive, so received totals need not
+     * equal server sent totals. Incomplete snapshots must not be used for reconciliation.
+     * @return exact immutable counters, also available after close
+     */
+    TrafficStats trafficStats();
+
+    /**
      * Releases sockets, router threads, and any client-owned asynchronous executor.
      *
      * <p>This method is idempotent. It never shuts down an executor supplied by the caller.</p>

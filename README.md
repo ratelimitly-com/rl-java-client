@@ -159,6 +159,7 @@ runs the complete JUnit suite and builds a JAR with automatic module name
 ## Documentation
 
 - [Public Java API and outcomes](docs/api.md)
+- [Physical UDP traffic counters](docs/traffic.md)
 - [API keys, discovery, and configuration](docs/configuration.md)
 - [Resource-request HA policy](docs/request-policy.md)
 - [Lifecycle, concurrency, and asynchronous calls](docs/lifecycle.md)
